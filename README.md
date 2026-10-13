@@ -72,7 +72,7 @@ flowchart TD
         A["Danh sách <br> arXiv ID"] --> B["Tải source<br/>tar.gz hoặc gz"]
         B --> C["Giải nén,<br/>xóa ảnh,<br/>giữ khối figure"]
         C --> D["metadata.json"]
-        A --> E["Semantic Scholar API"]
+        A --> E["Semantic <br> Scholar API"]
         E --> F["references.json"]
     end
     subgraph M2["M2 - Hierarchical Parsing"]
@@ -87,7 +87,7 @@ flowchart TD
         I --> L["Gán nhãn<br/>tay và tự động"]
         K --> L
         F --> L
-        L --> FE["Feature Engineering"]
+        L --> FE["Feature <br> Engineering"]
         FE --> RM["Ranking Model"]
         RM --> PR["predictions<br/>.parquet<br/>top-5 và MRR"]
     end
