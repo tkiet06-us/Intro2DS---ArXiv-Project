@@ -234,7 +234,7 @@ Mỗi người **crawl và parse 5.000 bài** trên một dải ID riêng (tổn
 
 ### Cơ chế Review chéo
 
-Mỗi task có **1 Owner + 2 Reviewers** (xem bảng task ở mục 5). Owner viết code, 2 Reviewer đọc và Approve PR trước khi merge. Đây vừa là kiểm soát chất lượng vừa giúp mọi người hiểu code của nhau.
+Mỗi task có **1 Owner + 2 Reviewers** (xem bảng task ở mục 5). Owner viết code, 2 Reviewer đọc và Approve PR trước khi merge.
 
 ---
 
@@ -373,8 +373,6 @@ git push -u origin feature/P2-01-crawler
 | Ghi citation khi tham khảo code/tài liệu | Chép code không dẫn nguồn |
 | Dùng `.env` cho API key | **Commit API key / data thật** |
 
-> 🛡 Gợi ý: bật **Branch protection** cho `main` (Settings → Branches): yêu cầu PR và 2 approvals.
-
 ### 6.4 Checklist khi review PR
 
 - [ ] Code đúng yêu cầu của task (xem cột "Detail" trong bảng tiến độ)
@@ -501,8 +499,8 @@ git --version
 ### 9.2 Clone repo
 
 ```bash
-git clone <URL_REPO>
-cd arxiv-pipeline
+git clone https://github.com/tkiet06-us/Intro2DS---ArXiv-Project.git
+cd Intro2DS---ArXiv-Project
 ```
 
 ### 9.3 Cách A – `venv` (có sẵn trong Python)
@@ -737,7 +735,7 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 
 - 📌 **Được phép** tham khảo tài liệu online, nhưng **bắt buộc** ghi citation đầy đủ trong **code** (docstring/comment) **và báo cáo**.
 - 🧠 Dữ liệu và mô hình phải do **chính nhóm tự triển khai và giải thích**; mỗi thành viên phải hiểu phần của mình để bảo vệ.
-- 👥 Cả 5 thành viên đều tự crawl/parse dải cá nhân và tham gia gán nhãn (không "đi nhờ").
+- 👥 Cả 5 thành viên đều tự crawl/parse dải cá nhân và tham gia gán nhãn.
 
 **Mẫu citation trong code:**
 ```python
