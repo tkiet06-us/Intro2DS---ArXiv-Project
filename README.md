@@ -817,6 +817,6 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 ---
 
 <p align="center">
-  <i>Nhóm Nhập môn Khoa học Dữ liệu · Bảo · Nhi · Kiên · Khang · Kiệt</i><br>
+  <i>Nhóm Nhập môn Khoa học Dữ liệu - Bảo · Nhi · Kiên · Khang · Kiệt</i><br>
   <i>Không 10 điểm thì học lại môn 🚀</i>
 </p>
