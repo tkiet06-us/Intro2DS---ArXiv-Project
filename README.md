@@ -68,32 +68,32 @@ Mỗi tham khảo trong bài báo thường là một chuỗi chữ lộn xộn,
 
 ```mermaid
 flowchart LR
-    subgraph M1["M1 · Discovery & Crawling"]
-        A[Danh sách arXiv ID] --> B[Tải source<br/>.tar.gz / .gz]
-        B --> C[Giải nén & xóa ảnh<br/>giữ \begin&#123;figure&#125;]
-        C --> D[metadata.json]
-        A --> E[Semantic Scholar API]
-        E --> F[references.json]
+    subgraph M1["M1 - Discovery và Crawling"]
+        A["Danh sách arXiv ID"] --> B["Tải source<br/>tar.gz hoặc gz"]
+        B --> C["Giải nén, xóa ảnh<br/>giữ khối figure"]
+        C --> D["metadata.json"]
+        A --> E["Semantic Scholar API"]
+        E --> F["references.json"]
     end
-    subgraph M2["M2 · Hierarchical Parsing"]
-        C --> G[Multi-file Resolver<br/>\input / \include]
-        G --> H[LaTeX Cleanup &<br/>Math Normalization]
-        H --> I[hierarchy.json]
-        G --> J[BibTeX Extractor<br/>refs.bib]
-        H --> K[Dedup giữa các version]
+    subgraph M2["M2 - Hierarchical Parsing"]
+        C --> G["Multi-file Resolver<br/>input và include"]
+        G --> H["LaTeX Cleanup<br/>và Math Normalization"]
+        H --> I["hierarchy.json"]
+        G --> J["BibTeX Extractor<br/>refs.bib"]
+        H --> K["Dedup giữa các version"]
         J --> K
     end
-    subgraph M3["M3 · Reference Matching"]
-        I --> L[Gán nhãn<br/>tay + tự động]
+    subgraph M3["M3 - Reference Matching"]
+        I --> L["Gán nhãn<br/>tay và tự động"]
         K --> L
         F --> L
-        L --> M[Feature Engineering]
-        M --> N[Ranking Model]
-        N --> O[predictions.parquet<br/>top-5 + MRR]
+        L --> FE["Feature Engineering"]
+        FE --> RM["Ranking Model"]
+        RM --> PR["predictions.parquet<br/>top-5 và MRR"]
     end
-    O --> P[(7 bảng Parquet<br/>Hugging Face)]
-    K --> P
-    I --> P
+    PR --> HF[("7 bảng Parquet<br/>Hugging Face")]
+    K --> HF
+    I --> HF
 ```
 
 ### 1.2 Nguyên tắc thiết kế
