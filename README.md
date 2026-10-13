@@ -69,7 +69,7 @@ Mỗi tham khảo trong bài báo thường là một chuỗi chữ lộn xộn,
 ```mermaid
 flowchart TD
     subgraph M1["M1 - Discovery và Crawling"]
-        A["Danh sách arXiv ID"] --> B["Tải source<br/>tar.gz hoặc gz"]
+        A["Danh sách <br> arXiv ID"] --> B["Tải source<br/>tar.gz hoặc gz"]
         B --> C["Giải nén,<br/>xóa ảnh,<br/>giữ khối figure"]
         C --> D["metadata.json"]
         A --> E["Semantic Scholar API"]
