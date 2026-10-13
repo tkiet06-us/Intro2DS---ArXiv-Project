@@ -67,7 +67,7 @@ Mỗi tham khảo trong bài báo thường là một chuỗi chữ lộn xộn,
 ### 1.1 Sơ đồ tổng quan
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph M1["M1 - Discovery và Crawling"]
         A["Danh sách arXiv ID"] --> B["Tải source<br/>tar.gz hoặc gz"]
         B --> C["Giải nén, xóa ảnh<br/>giữ khối figure"]
