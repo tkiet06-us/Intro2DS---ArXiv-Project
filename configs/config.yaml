@@ -1,0 +1,17 @@
+crawler:
+  base_url: "https://export.arxiv.org/src"
+  delay_seconds: 3
+  max_retries: 3
+  timeout: 60
+s2_api:
+  base_url: "https://api.semanticscholar.org/graph/v1"
+  delay_seconds: 1
+paths:
+  raw: "data/raw"
+  processed: "data/processed"
+  labels: "data/labels"
+  sources: "data/sources"
+  reports: "reports"
+ml:
+  top_k: 5
+  seed: 42
