@@ -70,17 +70,17 @@ Mỗi tham khảo trong bài báo thường là một chuỗi chữ lộn xộn,
 flowchart TD
     subgraph M1["M1 - Discovery và Crawling"]
         A["Danh sách arXiv ID"] --> B["Tải source<br/>tar.gz hoặc gz"]
-        B --> C["Giải nén, xóa ảnh<br/>giữ khối figure"]
+        B --> C["Giải nén,<br/>xóa ảnh,<br/>giữ khối figure"]
         C --> D["metadata.json"]
         A --> E["Semantic Scholar API"]
         E --> F["references.json"]
     end
     subgraph M2["M2 - Hierarchical Parsing"]
-        C --> G["Multi-file Resolver<br/>input và include"]
-        G --> H["LaTeX Cleanup<br/>và Math Normalization"]
+        C --> G["Multi-file<br/>Resolver"]
+        G --> H["LaTeX Cleanup<br/>và Math<br/>Normalization"]
         H --> I["hierarchy.json"]
         G --> J["BibTeX Extractor<br/>refs.bib"]
-        H --> K["Dedup giữa các version"]
+        H --> K["Dedup<br/>giữa các version"]
         J --> K
     end
     subgraph M3["M3 - Reference Matching"]
@@ -89,7 +89,7 @@ flowchart TD
         F --> L
         L --> FE["Feature Engineering"]
         FE --> RM["Ranking Model"]
-        RM --> PR["predictions.parquet<br/>top-5 và MRR"]
+        RM --> PR["predictions<br/>.parquet<br/>top-5 và MRR"]
     end
     PR --> HF[("7 bảng Parquet<br/>Hugging Face")]
     K --> HF
