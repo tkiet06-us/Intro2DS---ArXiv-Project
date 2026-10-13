@@ -482,7 +482,7 @@ Tham số không bí mật (delay, retry, đường dẫn, `top_k`…) nằm tro
 
 ---
 
-## ⚙️ 9. Cài đặt (venv / conda)
+## 🔧 9. Cài đặt (venv / conda)
 
 ### 9.1 Yêu cầu
 
@@ -552,7 +552,7 @@ Thấy `passed` là bạn đã sẵn sàng. ✅
 
 ---
 
-## ▶️ 10. Chạy chương trình
+## 🚀 10. Chạy chương trình
 
 > Luôn **kích hoạt môi trường ảo** và chạy lệnh **từ thư mục gốc** của repo.
 
@@ -729,7 +729,7 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 
 ---
 
-## ⚖️ 15. Quy chế & Liêm chính học thuật
+## ⚖ 15. Quy chế & Liêm chính học thuật
 
 > 🚨 **Mọi hành vi gian lận, chép code không dẫn nguồn hoặc gian dối dữ liệu sẽ bị nhận 0 điểm cho TOÀN BỘ milestone.**
 
@@ -745,7 +745,7 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 
 ---
 
-## ⚠️ 16. Lưu ý quan trọng
+## ❗ 16. Lưu ý quan trọng
 
 1. **Tôn trọng arXiv:** vi phạm giới hạn truy cập có thể bị **chặn IP** (ảnh hưởng cả nhóm nếu chung mạng). Luôn có delay và User-Agent.
 2. **Cleanup trước, Dedup sau:** nếu đảo thứ tự, so khớp nội dung giữa các version sẽ sai vì định dạng LaTeX khác nhau.
