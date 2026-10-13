@@ -23,7 +23,7 @@ Dự án của nhóm làm 3 việc nối tiếp nhau:
 
 Cuối cùng, toàn bộ dữ liệu được đóng gói thành **7 bảng Parquet** và đăng lên **Hugging Face** để người khác dùng.
 
-### Vì sao bài toán này thú vị?
+### Bài toán
 
 Mỗi tham khảo trong bài báo thường là một chuỗi chữ lộn xộn, sai khác nhiều kiểu: viết tắt tên tác giả, thiếu năm, sai chính tả. Máy tính không thể chỉ so sánh chuỗi bằng `==`. Vì vậy ta cần **Machine Learning** để chấm điểm mức độ giống nhau và **xếp hạng** các ứng viên.
 
