@@ -639,7 +639,6 @@ logger.info("Crawl xong %s (%d phiên bản)", arxiv_id, n_versions)   # dùng %
 
 #### 6.9.12 Viết test
 
-- Tên file `test_<module>.py`, đặt trong `tests/` phản chiếu cấu trúc `src/`.
 - Mỗi test kiểm tra **một hành vi**, tên mô tả hành vi (`test_resume_skips_finished_papers`).
 - Theo mẫu **Arrange – Act – Assert** (chuẩn bị, chạy, kiểm tra), cách nhau bằng dòng trống.
 - Chỉ dùng **mock data** trong `tests/mock_data/`; test **không gọi mạng thật**, hãy giả lập response.
