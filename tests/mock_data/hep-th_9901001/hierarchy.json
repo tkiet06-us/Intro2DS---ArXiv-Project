@@ -1,0 +1,13 @@
+{
+  "elements": {
+    "hep-th/9901001#doc": "Mock Paper 3 (old ID)",
+    "hep-th/9901001#sec1": "Introduction",
+    "hep-th/9901001#s1": "Strings are fun."
+  },
+  "hierarchy": {
+    "1": {
+      "hep-th/9901001#sec1": "hep-th/9901001#doc",
+      "hep-th/9901001#s1": "hep-th/9901001#sec1"
+    }
+  }
+}

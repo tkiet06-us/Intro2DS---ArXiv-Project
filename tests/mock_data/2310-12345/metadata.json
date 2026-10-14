@@ -1,0 +1,13 @@
+{
+  "arxiv_id": "2310.12345",
+  "title": "Mock Paper 1",
+  "authors": [
+    "Alice",
+    "Bob"
+  ],
+  "submission_date": "2023-10-05",
+  "revised_dates": [
+    "2023-11-20"
+  ],
+  "venue": null
+}

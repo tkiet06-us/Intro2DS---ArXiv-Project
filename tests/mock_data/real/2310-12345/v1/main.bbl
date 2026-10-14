@@ -1,0 +1,246 @@
+\begin{thebibliography}{33}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Recht et~al.(2018{\natexlab{a}})Recht, Roelofs, Schmidt, and
+  Shankar]{Recht2018}
+Benjamin Recht, Rebecca Roelofs, Ludwig Schmidt, and Vaishaal Shankar.
+\newblock Do {CIFAR-10} classifiers generalize to cifar-10?
+\newblock \emph{CoRR}, abs/1806.00451, 2018{\natexlab{a}}.
+\newblock URL \url{http://arxiv.org/abs/1806.00451}.
+
+\bibitem[Peng et~al.(2018)Peng, Usman, Kaushik, Wang, Hoffman, and
+  Saenko]{visda}
+Xingchao Peng, Ben Usman, Neela Kaushik, Dequan Wang, Judy Hoffman, and Kate
+  Saenko.
+\newblock Visda: A synthetic-to-real benchmark for visual domain adaptation.
+\newblock In \emph{Proceedings of the IEEE Conference on Computer Vision and
+  Pattern Recognition (CVPR) Workshops}, June 2018.
+
+\bibitem[Volpi et~al.(2018)Volpi, Namkoong, Sener, Duchi, Murino, and
+  Savarese]{dg1}
+Riccardo Volpi, Hongseok Namkoong, Ozan Sener, John~C Duchi, Vittorio Murino,
+  and Silvio Savarese.
+\newblock Generalizing to unseen domains via adversarial data augmentation.
+\newblock \emph{Advances in neural information processing systems}, 31, 2018.
+
+\bibitem[Prakash et~al.(2019)Prakash, Boochoon, Brophy, Acuna, Cameracci,
+  State, Shapira, and Birchfield]{dg2}
+Aayush Prakash, Shaad Boochoon, Mark Brophy, David Acuna, Eric Cameracci,
+  Gavriel State, Omer Shapira, and Stan Birchfield.
+\newblock Structured domain randomization: Bridging the reality gap by
+  context-aware synthetic data.
+\newblock In \emph{2019 International Conference on Robotics and Automation
+  (ICRA)}, pages 7249--7255. IEEE, 2019.
+
+\bibitem[Zhou et~al.(2020)Zhou, Yang, Qiao, and Xiang]{dg3}
+Kaiyang Zhou, Yongxin Yang, Yu~Qiao, and Tao Xiang.
+\newblock Domain generalization with mixstyle.
+\newblock In \emph{International Conference on Learning Representations}, 2020.
+
+\bibitem[Kim et~al.(2022)Kim, Wang, Sclaroff, and Saenko]{dg4}
+Donghyun Kim, Kaihong Wang, Stan Sclaroff, and Kate Saenko.
+\newblock A broad study of pre-training for domain generalization and
+  adaptation.
+\newblock In Shai Avidan, Gabriel Brostow, Moustapha Ciss{\'e}, Giovanni~Maria
+  Farinella, and Tal Hassner, editors, \emph{Computer Vision -- ECCV 2022},
+  pages 621--638, Cham, 2022. Springer Nature Switzerland.
+\newblock ISBN 978-3-031-19827-4.
+
+\bibitem[Wang et~al.(2022)Wang, Lan, Liu, Ouyang, Qin, Lu, Chen, Zeng, and
+  Yu]{dgsurvey}
+Jindong Wang, Cuiling Lan, Chang Liu, Yidong Ouyang, Tao Qin, Wang Lu, Yiqiang
+  Chen, Wenjun Zeng, and Philip Yu.
+\newblock Generalizing to unseen domains: A survey on domain generalization.
+\newblock \emph{IEEE Transactions on Knowledge and Data Engineering}, 2022.
+
+\bibitem[Wang et~al.(2021)Wang, Shelhamer, Liu, Olshausen, and
+  Darrell]{tent2021}
+Dequan Wang, Evan Shelhamer, Shaoteng Liu, Bruno Olshausen, and Trevor Darrell.
+\newblock Tent: fully test-time adaptation by entropy minimization.
+\newblock \emph{arXiv:2006.10726 [cs, stat]}, March 2021.
+\newblock arXiv: 2006.10726.
+
+\bibitem[Liang et~al.(2021)Liang, Hu, and Feng]{shot2021}
+Jian Liang, Dapeng Hu, and Jiashi Feng.
+\newblock Do we really need to access the source data? {Source} hypothesis
+  transfer for unsupervised domain adaptation.
+\newblock \emph{arXiv:2002.08546 [cs]}, June 2021.
+\newblock URL \url{http://arxiv.org/abs/2002.08546}.
+\newblock arXiv: 2002.08546.
+
+\bibitem[Khurana et~al.(2021)Khurana, Paul, Rai, Biswas, and
+  Aggarwal]{sita2021}
+Ansh Khurana, Sujoy Paul, Piyush Rai, Soma Biswas, and Gaurav Aggarwal.
+\newblock Sita: single image test-time adaptation.
+\newblock \emph{arXiv:2112.02355 [cs]}, December 2021.
+\newblock URL \url{http://arxiv.org/abs/2112.02355}.
+\newblock arXiv: 2112.02355.
+
+\bibitem[Boudiaf et~al.(2022)Boudiaf, Mueller, Ben~Ayed, and
+  Bertinetto]{lame2022}
+Malik Boudiaf, Romain Mueller, Ismail Ben~Ayed, and Luca Bertinetto.
+\newblock Parameter-free online test-time adaptation.
+\newblock In \emph{IEEE/CVF Conference on Computer Vision and Pattern
+  Recognition (CVPR)}, pages 8344--8353, 2022.
+
+\bibitem[Sun et~al.(2020)Sun, Wang, Liu, Miller, Efros, and Hardt]{ttt}
+Yu~Sun, Xiaolong Wang, Zhuang Liu, John Miller, Alexei~A. Efros, and Moritz
+  Hardt.
+\newblock Test-time training with self-supervision for generalization under
+  distribution shifts.
+\newblock In \emph{International Conference on Machine Learning (ICML)}, 2020.
+
+\bibitem[Liu et~al.(2021)Liu, Kothari, van Delft, Bellot-Gurlet, Mordan, and
+  Alahi]{ttt++}
+Yuejiang Liu, Parth Kothari, Bastien van Delft, Baptiste Bellot-Gurlet, Taylor
+  Mordan, and Alexandre Alahi.
+\newblock Ttt++: When does self-supervised test-time training fail or thrive?
+\newblock \emph{Neural Information Processing Systems (NeurIPS)}, 2021.
+
+\bibitem[Gandelsman et~al.(2022)Gandelsman, Sun, Chen, and Efros]{tttmask}
+Yossi Gandelsman, Yu~Sun, Xinlei Chen, and Alexei~A Efros.
+\newblock Test-time training with masked autoencoders.
+\newblock In Alice~H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho,
+  editors, \emph{Advances in Neural Information Processing Systems}, 2022.
+\newblock URL \url{https://openreview.net/forum?id=SHMi1b7sjXk}.
+
+\bibitem[Osowiechi et~al.(2023)Osowiechi, Hakim, Noori, Cheraghalikhani,
+  Ben~Ayed, and Desrosiers]{tttflow}
+David Osowiechi, Gustavo A.~Vargas Hakim, Mehrdad Noori, Milad Cheraghalikhani,
+  Ismail Ben~Ayed, and Christian Desrosiers.
+\newblock Tttflow: Unsupervised test-time training with normalizing flow.
+\newblock In \emph{Proceedings of the IEEE/CVF Winter Conference on
+  Applications of Computer Vision}, pages 2126--2134, 2023.
+
+\bibitem[Ji et~al.(2019)Ji, Henriques, and Vedaldi]{ji2019invariant}
+Xu~Ji, Joao~F Henriques, and Andrea Vedaldi.
+\newblock Invariant information clustering for unsupervised image
+  classification and segmentation.
+\newblock In \emph{Proceedings of the IEEE/CVF International Conference on
+  Computer Vision}, pages 9865--9874, 2019.
+
+\bibitem[Hu et~al.(2017)Hu, Miyato, Tokui, Matsumoto, and
+  Sugiyama]{hu2017learning}
+Weihua Hu, Takeru Miyato, Seiya Tokui, Eiichi Matsumoto, and Masashi Sugiyama.
+\newblock Learning discrete representations via information maximizing
+  self-augmented training.
+\newblock In \emph{International conference on machine learning}, pages
+  1558--1567. PMLR, 2017.
+
+\bibitem[Oord et~al.(2018)Oord, Li, and Vinyals]{oord2018representation}
+Aaron van~den Oord, Yazhe Li, and Oriol Vinyals.
+\newblock Representation learning with contrastive predictive coding.
+\newblock \emph{arXiv preprint arXiv:1807.03748}, 2018.
+
+\bibitem[Tschannen et~al.(2020)Tschannen, Djolonga, Rubenstein, Gelly, and
+  Lucic]{tschannenmutual}
+Michael Tschannen, Josip Djolonga, Paul~K Rubenstein, Sylvain Gelly, and Mario
+  Lucic.
+\newblock On mutual information maximization for representation learning.
+\newblock In \emph{International Conference on Learning Representations}, 2020.
+
+\bibitem[Jabi et~al.(2021)Jabi, Pedersoli, Mitiche, and Ayed]{Jabi21}
+Mohammed Jabi, Marco Pedersoli, Amar Mitiche, and Ismail~Ben Ayed.
+\newblock Deep clustering: On the link between discriminative models and
+  k-means.
+\newblock \emph{{IEEE} Trans. Pattern Anal. Mach. Intell.}, 43\penalty0
+  (6):\penalty0 1887--1896, 2021.
+
+\bibitem[Boudiaf et~al.(2020)Boudiaf, Ziko, Rony, Dolz, Piantanida, and
+  Ayed]{TIM}
+Malik Boudiaf, Imtiaz~Masud Ziko, J{\'{e}}r{\^{o}}me Rony, Jose Dolz, Pablo
+  Piantanida, and Ismail~Ben Ayed.
+\newblock Transductive information maximization for few-shot learning.
+\newblock In \emph{Neural Information Processing Systems (NeurIPS)}, 2020.
+
+\bibitem[Nado et~al.(2021)Nado, Padhy, Sculley, D'Amour, Lakshminarayanan, and
+  Snoek]{PTBN}
+Zachary Nado, Shreyas Padhy, D.~Sculley, Alexander D'Amour, Balaji
+  Lakshminarayanan, and Jasper Snoek.
+\newblock Evaluating prediction-time batch normalization for robustness under
+  covariate shift.
+\newblock \emph{arXiv:2006.10963 [cs, stat]}, January 2021.
+\newblock URL \url{http://arxiv.org/abs/2006.10963}.
+\newblock arXiv: 2006.10963.
+
+\bibitem[He et~al.(2022)He, Chen, Xie, Li, Doll{\'a}r, and Girshick]{mae}
+Kaiming He, Xinlei Chen, Saining Xie, Yanghao Li, Piotr Doll{\'a}r, and Ross
+  Girshick.
+\newblock Masked autoencoders are scalable vision learners.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision
+  and Pattern Recognition}, pages 16000--16009, 2022.
+
+\bibitem[Dosovitskiy et~al.(2020)Dosovitskiy, Beyer, Kolesnikov, Weissenborn,
+  Zhai, Unterthiner, Dehghani, Minderer, Heigold, Gelly, et~al.]{vit}
+Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn,
+  Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg
+  Heigold, Sylvain Gelly, et~al.
+\newblock An image is worth 16x16 words: Transformers for image recognition at
+  scale.
+\newblock \emph{arXiv preprint arXiv:2010.11929}, 2020.
+
+\bibitem[Dinh et~al.(2016)Dinh, Sohl-Dickstein, and Bengio]{realnvp}
+Laurent Dinh, Jascha Sohl-Dickstein, and Samy Bengio.
+\newblock Density estimation using real nvp.
+\newblock \emph{arXiv preprint arXiv:1605.08803}, 2016.
+
+\bibitem[Kingma and Dhariwal(2018)]{glow}
+Durk~P Kingma and Prafulla Dhariwal.
+\newblock Glow: Generative flow with invertible 1x1 convolutions.
+\newblock In S.~Bengio, H.~Wallach, H.~Larochelle, K.~Grauman, N.~Cesa-Bianchi,
+  and R.~Garnett, editors, \emph{Advances in Neural Information Processing
+  Systems}, volume~31. Curran Associates, Inc., 2018.
+\newblock URL
+  \url{https://proceedings.neurips.cc/paper/2018/file/d139db6a236200b21cc7f752979132d0-Paper.pdf}.
+
+\bibitem[MacKay and Mac~Kay(2003)]{mackay2003information}
+David~JC MacKay and David~JC Mac~Kay.
+\newblock \emph{Information theory, inference and learning algorithms}.
+\newblock Cambridge university press, 2003.
+
+\bibitem[Krizhevsky(2009)]{cifar10}
+Alex Krizhevsky.
+\newblock Learning multiple layers of features from tiny images.
+\newblock Technical report, 2009.
+
+\bibitem[Hendrycks and Dietterich(2019)]{cifar10c}
+Dan Hendrycks and Thomas Dietterich.
+\newblock Benchmarking neural network robustness to common corruptions and
+  perturbations.
+\newblock \emph{Proceedings of the International Conference on Learning
+  Representations}, 2019.
+
+\bibitem[Recht et~al.(2018{\natexlab{b}})Recht, Roelofs, Schmidt, and
+  Shankar]{cifar10.1}
+Benjamin Recht, Rebecca Roelofs, Ludwig Schmidt, and Vaishaal Shankar.
+\newblock Do {CIFAR-10} classifiers generalize to cifar-10?
+\newblock \emph{CoRR}, abs/1806.00451, 2018{\natexlab{b}}.
+\newblock URL \url{http://arxiv.org/abs/1806.00451}.
+
+\bibitem[Deng et~al.(2009)Deng, Dong, Socher, Li, Li, and Fei-Fei]{imagenet}
+Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li, and Li~Fei-Fei.
+\newblock Imagenet: A large-scale hierarchical image database.
+\newblock In \emph{2009 IEEE conference on computer vision and pattern
+  recognition}, pages 248--255. Ieee, 2009.
+
+\bibitem[Lee et~al.(2023)Lee, Chen, Tajwar, Kumar, Yao, Liang, and
+  Finn]{surgical}
+Yoonho Lee, Annie~S Chen, Fahim Tajwar, Ananya Kumar, Huaxiu Yao, Percy Liang,
+  and Chelsea Finn.
+\newblock Surgical fine-tuning improves adaptation to distribution shifts.
+\newblock In \emph{The Eleventh International Conference on Learning
+  Representations}, 2023.
+\newblock URL \url{https://openreview.net/forum?id=APuPRxjHvZ}.
+
+\bibitem[Chen et~al.(2020)Chen, Kornblith, Norouzi, and Hinton]{simclr}
+Ting Chen, Simon Kornblith, Mohammad Norouzi, and Geoffrey~Everest Hinton.
+\newblock A simple framework for contrastive learning of visual
+  representations.
+\newblock 2020.
+\newblock URL \url{https://arxiv.org/abs/2002.05709}.
+
+\end{thebibliography}

@@ -155,7 +155,6 @@ Có IDD:        M1 ──────────────────►
 | Benchmark | Google Colab (CPU-only) | Đo hiệu năng chuẩn |
 
 ---
-
 ## 🗂 3. Cấu trúc thư mục
 
 ```
@@ -192,10 +191,15 @@ arxiv-pipeline/
 │       ├── evaluate.py          # Tính MRR                                 [P4-01]
 │       └── export_parquet.py    # Xuất 7 bảng + upload HF                  [P4-02]
 │
-├── tests/                       # Cấu trúc phản chiếu src/
-│   ├── make_mock.py             # Sinh dữ liệu giả                         [P1-02]
-│   ├── mock_data/               # Mock nhỏ (ĐƯỢC commit)
-│   ├── common/  m1_crawling/  m2_parsing/  m3_matching/
+├── tests/                       # Thư mục script sinh mock & unit tests
+│   ├── make_mock.py             # Sinh dữ liệu giả (mock data)             [P1-02]
+│   ├── fetch_real_samples.py    # Tải 2-3 bài thật mẫu từ arXiv            [P1-02]
+│   ├── mock_data/               # Thư mục dữ liệu mock (ĐƯỢC commit)
+│   │   └── real/                # Mã nguồn LaTeX thật mẫu (đã lọc ảnh)
+│   ├── common/                  # Chứa các file unit test (test_schemas, test_utils_io, test_make_mock...)
+│   ├── m1_crawling/             # Unit test cho module M1
+│   ├── m2_parsing/              # Unit test cho module M2
+│   └── m3_matching/             # Unit test cho module M3
 │
 ├── docs/                        # Tài liệu thiết kế (spec)
 │   ├── discovery_report.md      # So sánh phương pháp discovery            [P1-00]
