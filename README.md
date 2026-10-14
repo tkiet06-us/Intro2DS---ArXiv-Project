@@ -333,7 +333,7 @@ Tuần  12/10 ─ 15/10 : Giai đoạn 1 – Khảo sát, Repo, Schema, Spec
 - **Họp sync:** 1 buổi/tuần, **Chủ Nhật 20:00** qua Discord.
 - **Cập nhật hằng ngày:** nhắn **1 câu ngắn** vào channel Discord nhóm (làm gì / vướng gì).
 
-### 6.2 Git flow
+### 6.2 Mô hình nhánh
 
 ```
 main  ●───────●──────────●─────────●        ← luôn chạy được, chỉ merge qua PR
@@ -341,7 +341,30 @@ main  ●───────●──────────●────�
         ●───●    ●─────●    ●─────●        ← feature/<TASK-ID>-<mô-tả>
 ```
 
-**Từng bước làm một task** (ví dụ P2-01):
+- `main` là nhánh **ổn định**: luôn cài được, `pytest` luôn xanh. **Không ai push trực tiếp.**
+- Mọi thay đổi đi theo chu trình: **tạo nhánh → commit → push → Pull Request → 2 Approve + CI xanh → merge → xóa nhánh**.
+- Mỗi task trong bảng ở mục 5 tương ứng **một nhánh** và **một PR**.
+
+### 6.3 Quy tắc đặt tên nhánh
+
+Cú pháp: `<loại>/<TASK-ID>-<mô-tả-ngắn>`
+
+| Loại | Dùng khi | Ví dụ |
+|---|---|---|
+| `feature/` | Làm task mới (phổ biến nhất) | `feature/P2-01-crawler` |
+| `fix/` | Sửa lỗi của code đã merge | `fix/P2-01-handle-403` |
+| `docs/` | Chỉ sửa tài liệu, README, spec | `docs/P1-04-latex-spec` |
+| `test/` | Chỉ bổ sung test | `test/P2-04-dedup-cases` |
+| `refactor/` | Dọn code, không đổi hành vi | `refactor/P2-03-tree-builder` |
+
+Quy tắc chi tiết:
+
+- **TASK-ID viết hoa đúng như bảng task** (`P2-01`, `P3-02a`), phần mô tả viết **chữ thường, ngăn cách bằng dấu gạch ngang**, không dấu tiếng Việt, không khoảng trắng, tối đa khoảng 4 từ.
+- Một nhánh chỉ làm **một task**. Không gộp nhiều task vào một nhánh.
+- Task có 2 Owner (ví dụ P2-06 của Kiệt & Bảo): **một người tạo nhánh**, người kia push vào cùng nhánh sau khi báo trên Discord.
+- ✅ `feature/P2-05-latex-cleanup` · ❌ `kien-branch`, `test123`, `Feature/Crawler_New`
+
+### 6.4 Từng bước làm một task (ví dụ P2-01)
 
 ```bash
 # 1. Cập nhật main
@@ -353,33 +376,315 @@ git checkout -b feature/P2-01-crawler
 
 # 3. Code, rồi commit nhỏ & thường xuyên
 git add src/m1_crawling/crawler.py
-git commit -m "P2-01: thêm hàm crawl_paper với retry"
+git commit -m "P2-01 feat: thêm hàm crawl_paper với retry"
 
-# 4. Đẩy nhánh lên GitHub
+# 4. Trước khi mở PR: lấy main mới nhất về nhánh của bạn
+git fetch origin
+git merge origin/main
+
+# 5. Đẩy nhánh lên GitHub
 git push -u origin feature/P2-01-crawler
 
-# 5. Mở Pull Request trên GitHub → gán đúng 2 Reviewers theo bảng task
-# 6. Sửa theo góp ý → khi đủ 2 Approve mới được Merge vào main
+# 6. Mở Pull Request trên GitHub → gán đúng 2 Reviewers theo bảng task
+# 7. Sửa theo góp ý (commit thêm vào cùng nhánh) → đủ 2 Approve + CI xanh thì Merge
+# 8. Sau khi merge: xóa nhánh và cập nhật main
+git checkout main
+git pull origin main
+git branch -d feature/P2-01-crawler
 ```
 
-### 6.3 Quy tắc bắt buộc
+### 6.5 Quy tắc commit message
+
+Cú pháp: `<TASK-ID> <loại>: <mô tả ngắn, thể mệnh lệnh>`
+
+| Loại | Ý nghĩa |
+|---|---|
+| `feat` | Thêm chức năng |
+| `fix` | Sửa lỗi |
+| `docs` | Tài liệu |
+| `test` | Thêm/sửa test |
+| `refactor` | Dọn code, không đổi hành vi |
+| `chore` | Việc vặt: config, requirements, .gitignore |
+
+```
+✅ P2-01 feat: thêm retry khi gặp HTTP 403
+✅ P2-04 fix: giữ trường doi khi gộp BibTeX trùng
+✅ P1-04 docs: bổ sung quy tắc xử lý itemize
+❌ update
+❌ fix bug
+❌ done
+```
+
+- Dòng đầu **không quá ~72 ký tự**; cần giải thích thêm thì viết ở phần thân (cách một dòng trống).
+- **Mỗi commit làm một việc.** Commit nhỏ, thường xuyên thay vì một commit khổng lồ cuối ngày.
+- Không commit code đang lỗi cú pháp hoặc `pytest` đang đỏ.
+
+### 6.6 Quy tắc Pull Request
+
+- **Tiêu đề PR:** `<TASK-ID>: <tên task>` (ví dụ `P2-01: Module crawling arXiv`).
+- **Mô tả PR** theo mẫu `.github/pull_request_template.md`: làm gì, cách kiểm tra, tài liệu tham khảo (citation).
+- **Kích thước:** nên dưới ~400 dòng thay đổi; PR quá lớn thì tách nhỏ để dễ review.
+- **Gán đúng 2 Reviewers** theo cột "Reviewers" trong bảng task.
+- Mở **Draft PR** nếu muốn nhận góp ý sớm khi code chưa xong.
+- **Điều kiện merge** (bắt buộc cả ba):
+  1. Đủ **2 Approve** từ đúng 2 Reviewers.
+  2. **CI xanh** (`ruff` + `pytest`).
+  3. Đã **giải quyết hết comment** và nhánh không còn conflict với `main`.
+- Dùng **Squash and merge** để mỗi task chỉ còn **một commit gọn** trên `main`; commit message khi squash giữ dạng `P2-01 feat: ...`.
+- **Xóa nhánh** ngay sau khi merge.
+- **Owner không tự merge khi chưa đủ duyệt.** Sau khi đủ điều kiện, Owner là người bấm merge.
+
+### 6.7 Quy tắc Review
+
+- Reviewer **phản hồi trong vòng 24 giờ**; nếu bận thì báo trên Discord để đổi người.
+- Góp ý cụ thể, lịch sự, nêu rõ **vì sao** và **gợi ý cách sửa**; phân biệt lỗi bắt buộc sửa với gợi ý tùy chọn (đánh dấu `nit:`).
+- Chỉ **Approve** khi đã đọc kỹ và chạy được code. Không Approve cho có.
+- Owner trả lời từng comment (sửa xong thì ghi "Done", không đồng ý thì giải thích) rồi mới yêu cầu review lại.
+
+### 6.8 Xử lý Merge Conflict
+
+```bash
+git fetch origin
+git merge origin/main          # Git báo conflict ở file nào đó
+# Mở file, tìm các dấu <<<<<<<  =======  >>>>>>>, chọn nội dung đúng, xóa dấu
+git add <file-đã-sửa>
+git commit                     # hoàn tất merge
+pytest -q                      # chạy lại test trước khi push
+git push
+```
+
+- Giảm conflict bằng cách **chia file theo module** (mỗi owner sửa file của mình) và **merge `main` vào nhánh thường xuyên**.
+- Cần sửa file của người khác (ví dụ `schemas.py`): **báo trên Discord trước** và tạo PR riêng, nhỏ, review nhanh.
+- **Không** dùng `git push --force` lên `main`; trên nhánh cá nhân chỉ dùng `--force-with-lease` khi thật sự cần và đã báo Reviewer.
+
+### 6.9 Quy định trình bày code
+
+#### 6.9.1 Ngôn ngữ và định dạng cơ bản
+
+| Hạng mục | Quy định |
+|---|---|
+| Phiên bản | Python **3.11** |
+| Thụt lề | **4 dấu cách**, không dùng Tab |
+| Độ dài dòng | Tối đa **100 ký tự** |
+| Mã hóa file | **UTF-8**; khi mở file luôn ghi rõ `encoding="utf-8"` |
+| Dấu nháy | Chuỗi dùng `"..."` (nháy kép), do `ruff format` tự xử lý |
+| Cuối file | Có đúng **1 dòng trống**, không có khoảng trắng thừa cuối dòng |
+| Dòng trống | 2 dòng trống giữa các hàm/class cấp cao, 1 dòng trống giữa các method |
+| Ngôn ngữ tên (biến, hàm, class, file) | **Tiếng Anh** |
+| Ngôn ngữ docstring/comment | **Tiếng Việt**|
+
+#### 6.9.2 Quy tắc đặt tên
+
+| Đối tượng | Kiểu | Ví dụ |
+|---|---|---|
+| File, package, module | `snake_case` | `latex_parser.py`, `m1_crawling/` |
+| Hàm, method, biến | `snake_case`, là động từ cho hàm | `crawl_paper`, `size_before` |
+| Class (kể cả Pydantic model) | `PascalCase`, danh từ | `PaperMetadata`, `BibtexEntry` |
+| Hằng số | `UPPER_SNAKE_CASE`, đặt đầu file | `ARXIV_DELAY_SECONDS = 3` |
+| Biến/hàm nội bộ module | Bắt đầu bằng `_` | `_strip_comments` |
+| Biến boolean | Bắt đầu bằng `is_`, `has_`, `should_` | `is_pdf_only`, `has_bib` |
+| Test | `test_<hành vi>` | `test_dedup_keeps_all_fields` |
+
+Quy tắc kèm theo:
+
+- Tên **mô tả đúng ý nghĩa**, không viết tắt khó hiểu: ✅ `reference_count`, ❌ `rc`, `tmp2`, `data1`.
+- Không đặt tên một chữ cái, **trừ** biến vòng lặp ngắn (`i`, `k`, `v`) và công thức toán.
+- Từ khóa miền bài toán dùng nhất quán trong toàn repo: `arxiv_id` (không `paper_id`/`aid`), `citation_key`, `version`, `element_id`, `parent_id`. Tên cột bảng Parquet phải **trùng đúng** tên trường trong `src/schemas.py`.
+- Một kiểu `arxiv_id` duy nhất trong code: dạng **chuẩn của arXiv** (`2506.00788`, `hep-th/9901001`). Chỉ đổi sang dạng thư mục `yymm-id` (`2506-00788`) tại **một hàm tiện ích duy nhất** trong `utils_io.py`, không tự viết chuyển đổi rải rác.
+
+#### 6.9.3 Cấu trúc file và thứ tự import
+
+Thứ tự trong một file `.py`:
+
+1. Docstring module (1-3 dòng: file này làm gì)
+2. `import` (3 nhóm, cách nhau 1 dòng trống: thư viện chuẩn → thư viện ngoài → module của dự án)
+3. Hằng số
+4. Class / hàm
+5. `if __name__ == "__main__":` (nếu có)
+
+```python
+"""Tải mã nguồn LaTeX của bài báo từ export.arxiv.org (M1)."""
+
+import logging
+import time
+from pathlib import Path
+
+import requests
+
+from src.common.utils_io import write_json
+from src.schemas import PaperMetadata
+
+logger = logging.getLogger(__name__)
+
+ARXIV_SRC_URL = "https://export.arxiv.org/src/{arxiv_id}v{version}"
+ARXIV_DELAY_SECONDS = 3
+```
+
+- **Import tuyệt đối** từ gốc repo (`from src.common...`), không dùng import tương đối kiểu `from ..common`.
+- **Không** `from x import *`.
+- Không import thừa.
+
+#### 6.9.4 Type hint (chú thích kiểu)
+
+- **Mọi hàm public** (không bắt đầu bằng `_`) phải có type hint cho tham số và giá trị trả về.
+- Dùng cú pháp Python 3.11: `list[str]`, `dict[str, int]`, `str | None` (không dùng `List`, `Dict`, `Optional`).
+- Dữ liệu có cấu trúc cố định dùng **Pydantic model** trong `src/schemas.py`, không truyền `dict` tự do giữa các module.
+
+```python
+def fetch_references(arxiv_id: str, api_key: str) -> dict[str, dict]:
+    ...
+```
+
+#### 6.9.5 Docstring
+
+Dùng **kiểu Google**. Hàm/class public bắt buộc có docstring: dòng tóm tắt, sau đó `Args`, `Returns`, `Raises` khi cần.
+
+```python
+def crawl_paper(arxiv_id: str, out_dir: Path) -> bool:
+    """Tải mọi phiên bản (v1, v2, ...) của một bài báo và xóa file ảnh.
+
+    Args:
+        arxiv_id: Mã arXiv chuẩn, ví dụ "2506.00788".
+        out_dir: Thư mục đầu ra; sẽ tạo thư mục con theo dạng "yymm-id".
+
+    Returns:
+        True nếu tải được ít nhất một phiên bản có mã nguồn TeX,
+        False nếu bài chỉ có PDF/Word (khi đó vẫn tạo record rỗng).
+
+    Raises:
+        requests.HTTPError: Khi arXiv trả mã lỗi sau khi đã thử lại hết số lần.
+    """
+```
+
+- Dòng tóm tắt viết **một câu**, thể mệnh lệnh/mô tả, kết thúc bằng dấu chấm.
+- Docstring nói **làm gì và vì sao**; còn **cách làm** thì viết trong comment cạnh code.
+
+#### 6.9.6 Comment
+
+- Comment giải thích **lý do (why)**, không lặp lại điều code đã nói rõ (what).
+- Comment đặt **trên** dòng code, cùng mức thụt lề; tránh comment cuối dòng dài.
+- Đoạn regex hoặc thuật toán khó **bắt buộc** có comment mô tả mẫu nó khớp, kèm một ví dụ.
+- **Không** để code bị comment-out trong PR (đã có Git lưu lịch sử).
+- Đánh dấu việc dang dở theo mẫu: `# TODO(Khang, P2-04): xử lý \bibitem có nhiều dòng`. Không dùng `TODO` không tên người và không mã task.
+
+```python
+# Khớp "\bibitem{key} nội dung..." đến trước \bibitem kế tiếp hoặc hết khối.
+# Ví dụ: "\bibitem{smith19} J. Smith. Deep Learning. 2019."
+BIBITEM_PATTERN = re.compile(r"\\bibitem(?:\[[^\]]*\])?\{([^}]+)\}(.*?)(?=\\bibitem|\Z)", re.S)
+```
+
+#### 6.9.7 Hàm và cấu trúc code
+
+- Mỗi hàm **làm một việc**; độ dài khuyến nghị **dưới ~40 dòng**, dài hơn thì tách hàm.
+- Tối đa **5 tham số**; nhiều hơn thì gom vào một Pydantic model hoặc dataclass.
+- Hạn chế lồng nhau quá **3 cấp** (`if`/`for`): dùng *early return* để code phẳng hơn.
+- **Không dùng biến toàn cục thay đổi được.** Hằng số thì được.
+- **Không hard-code**: delay, số lần retry, đường dẫn, `top_k`… nằm trong `configs/config.yaml`; khóa bí mật lấy từ biến môi trường (xem mục 8). Không viết cứng đường dẫn tuyệt đối kiểu `C:\Users\...`.
+- Đường dẫn dùng `pathlib.Path`, **không** nối chuỗi bằng `+` hay `os.path.join`.
+- Regex dùng nhiều lần thì `re.compile` một lần ở đầu file, đặt tên hằng số.
+
+```python
+# ✅ Early return, phẳng
+def parse_year(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    match = YEAR_PATTERN.search(raw)
+    return int(match.group()) if match else None
+```
+
+#### 6.9.8 Xử lý lỗi và logging
+
+Dự án chạy hàng nghìn bài, nên **một bài lỗi không được làm sập cả dải** (xem mục 14).
+
+- **Không** dùng `except:` trống hoặc `except Exception: pass` (nuốt lỗi âm thầm). Bắt **loại lỗi cụ thể**; nếu bắt `Exception` ở vòng lặp ngoài cùng của từng bài thì **bắt buộc** `logger.exception(...)` và ghi ID lỗi.
+- Dữ liệu có thể thiếu (PDF-only, LaTeX lạ): kiểm tra `None`/rỗng trước khi dùng (defensive programming), trả về giá trị rỗng hợp lệ thay vì để `KeyError`.
+- **Không dùng `print()`** trong `src/` (`ruff` rule `T20` sẽ báo). Dùng `logging`:
+
+| Mức | Dùng khi |
+|---|---|
+| `DEBUG` | Chi tiết khi phát triển |
+| `INFO` | Tiến độ bình thường ("Đã crawl 2506.00788 v1, v2") |
+| `WARNING` | Bất thường nhưng vẫn chạy tiếp (bài PDF-only, ref thiếu arXiv ID) |
+| `ERROR` | Một bài thất bại, kèm `arxiv_id` và lý do |
+
+```python
+logger.info("Crawl xong %s (%d phiên bản)", arxiv_id, n_versions)   # dùng %s, không dùng f-string
+```
+
+- Log lỗi luôn kèm `arxiv_id` để truy vết và để thống kê cho báo cáo M1/M2.
+
+#### 6.9.9 Làm việc với file và dữ liệu
+
+- Đọc/ghi JSON và checkpoint **chỉ qua các hàm trong `src/common/utils_io.py`**, không mỗi người tự viết một kiểu.
+- Ghi file bằng `encoding="utf-8"`; JSON ghi với `ensure_ascii=False, indent=2` cho dễ đọc.
+- Ghi file **an toàn khi bị ngắt** (checkpoint): ghi ra file tạm rồi đổi tên, để Ctrl+C giữa chừng không tạo file hỏng.
+- Xử lý **từng bài một** rồi ghi ra đĩa và giải phóng bộ nhớ, không giữ cả dải 5.000 bài trong RAM.
+- Cột/bảng Parquet phải **phẳng**, đúng kiểu như `src/schemas.py`; không nhét JSON dạng chuỗi hoặc object lồng nhau.
+
+#### 6.9.10 Quy tắc riêng cho crawler (bắt buộc)
+
+- Mọi request tới arXiv đi qua **một hàm duy nhất** có sẵn delay **≥ 3 giây**, `User-Agent` đọc từ `ARXIV_USER_AGENT`, **một kết nối/lần**. Cấm gọi `requests.get` trực tiếp tới arXiv ở chỗ khác.
+- Chỉ dùng domain `export.arxiv.org`; **cấm** `arxiv.org`.
+- Mọi request đều có `timeout=` (không để treo vô hạn) và có retry với thời gian chờ tăng dần.
+- Semantic Scholar: delay 1s, header `x-api-key`, xử lý HTTP 429.
+
+#### 6.9.11 Notebook (`.ipynb`)
+
+Đề cho phép nộp `.ipynb`, nhưng notebook rất khó review. Quy định:
+
+- Code **tái sử dụng** (crawler, parser, model) viết trong `src/*.py`. Notebook chỉ để **thử nghiệm, phân tích dữ liệu, vẽ biểu đồ**.
+- **Xóa toàn bộ output** trước khi commit (`Kernel → Restart & Clear Output`, hoặc `jupyter nbconvert --clear-output --inplace <file>`), vì output chứa dữ liệu thật và làm diff khó đọc.
+- Notebook phải **chạy được từ trên xuống dưới** (`Restart & Run All`) mà không lỗi.
+- Notebook báo cáo Jupyter Book nằm ở `book-repo/`, không để trong repo code.
+
+#### 6.9.12 Viết test
+
+- Tên file `test_<module>.py`, đặt trong `tests/` phản chiếu cấu trúc `src/`.
+- Mỗi test kiểm tra **một hành vi**, tên mô tả hành vi (`test_resume_skips_finished_papers`).
+- Theo mẫu **Arrange – Act – Assert** (chuẩn bị, chạy, kiểm tra), cách nhau bằng dòng trống.
+- Chỉ dùng **mock data** trong `tests/mock_data/`; test **không gọi mạng thật**, hãy giả lập response.
+- Bug được sửa thì thêm một test tái hiện bug đó.
+
+#### 6.9.13 Những điều không làm
+
+| ❌ Không | ✅ Thay bằng |
+|---|---|
+| `print(...)` để debug rồi quên xóa | `logger.debug(...)` |
+| `except: pass` | Bắt lỗi cụ thể + `logger.exception` |
+| Hard-code delay, đường dẫn, API key | `configs/config.yaml`, `.env` |
+| `from module import *` | Import tên cụ thể |
+| Code bị comment-out | Xóa đi, Git đã lưu lịch sử |
+| Hàm 200 dòng làm nhiều việc | Tách thành các hàm nhỏ |
+| Tự viết lại hàm đọc/ghi JSON | Dùng `utils_io.py` |
+| `dict` tự do giữa các module | Pydantic model trong `schemas.py` |
+| Biến tên `a`, `tmp`, `data2` | Tên có nghĩa |
+| Copy code không ghi nguồn | Ghi citation tại chỗ |
+
+### 6.10 Bảng tóm tắt
 
 | ✅ Nên | ❌ Không |
 |---|---|
 | Mỗi task một nhánh `feature/<TASK-ID>-...` | Push thẳng lên `main` |
-| PR phải có **đủ 2 Reviewers Approve** | Tự merge khi chưa đủ duyệt |
-| Commit message bắt đầu bằng task ID | Commit "update", "fix" mơ hồ |
-| Chạy `pytest` trước khi mở PR | Commit khi test đang đỏ |
+| Tên nhánh chữ thường, gạch ngang, có TASK-ID | Đặt tên theo người (`kien-branch`) hoặc mơ hồ (`test`) |
+| Commit dạng `P2-01 feat: ...` | Commit "update", "fix", "done" |
+| PR đủ **2 Approve + CI xanh** mới merge | Tự merge khi chưa đủ duyệt |
+| Merge `origin/main` vào nhánh trước khi mở PR | Để nhánh lệch `main` hàng tuần |
+| Chạy `ruff` và `pytest` trước khi push | Commit khi test đang đỏ |
 | Ghi citation khi tham khảo code/tài liệu | Chép code không dẫn nguồn |
 | Dùng `.env` cho API key | **Commit API key / data thật** |
+| Xóa nhánh sau khi merge | Để nhánh cũ tồn đọng |
 
-### 6.4 Checklist khi review PR
+
+### 6.11 Checklist khi review PR
 
 - [ ] Code đúng yêu cầu của task (xem cột "Detail" trong bảng tiến độ)
-- [ ] Có test, test pass trên mock data
-- [ ] Không có data thật / API key
+- [ ] Tên nhánh và commit message đúng quy ước
+- [ ] Có test, test pass trên mock data; CI xanh
+- [ ] Không có data thật / API key / file lớn
 - [ ] Có docstring và citation nếu cần
-- [ ] Tuân thủ quy định crawler (delay, User-Agent)
+- [ ] Tuân thủ quy định crawler (delay ≥ 3s, User-Agent, chỉ dùng `export.arxiv.org`)
+- [ ] Không phá `src/schemas.py` (schema phải ổn định theo IDD)
+- [ ] Hàm public có type hint + docstring Google; không còn `print()`, code comment-out, `except: pass`
 
 ---
 
