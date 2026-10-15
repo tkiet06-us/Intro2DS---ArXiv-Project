@@ -1,8 +1,10 @@
 """Tải 2-3 bài arXiv thật làm mẫu cho parser (task P1-02, bước "real-sample mocking").
 
-Chạy: ARXIV_USER_AGENT="IntroDS-Student-Project/1.0 (mailto:you@example.com)" \
+Chạy: ARXIV_USER_AGENT="DS-Project-HCMUS/1.0 (mailto:you@student.hcmus.edu.vn)" \
       python tests/fetch_real_samples.py 1706.03762 <id khác> ...
 
+Tuân thủ quy tắc crawler của đề (README mục 6.9.10): chỉ export.arxiv.org, delay >= 3 giây,
+một kết nối một lúc, có User-Agent mô tả rõ, mọi request đều có timeout và retry.
 """
 
 import argparse
@@ -19,8 +21,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.common.utils_io import to_folder_name  # noqa: E402
-from src.schemas import validate_arxiv_id  # noqa: E402
+from src.common.ids import to_folder_name, validate_arxiv_id  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

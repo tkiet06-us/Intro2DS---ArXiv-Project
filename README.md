@@ -171,8 +171,9 @@ arxiv-pipeline/
 │
 ├── src/                         # ★ Mã nguồn chính
 │   ├── main.py                  # Pipeline Runner (CLI)                    [P3-01]
-│   ├── schemas.py               # Pydantic schema cho 7 bảng               [P1-02]
+│   ├── schemas.py               # Pydantic schema + schema Parquet 7 bảng  [P1-02]
 │   ├── common/
+│   │   ├── ids.py               # Kiểm tra arXiv ID, đổi ID <-> tên folder [P1-02]
 │   │   └── utils_io.py          # Checkpoint, đọc/ghi JSON, logging
 │   ├── m1_crawling/
 │   │   ├── crawler.py           # Tải source arXiv                         [P2-01]
@@ -191,11 +192,14 @@ arxiv-pipeline/
 │       ├── evaluate.py          # Tính MRR                                 [P4-01]
 │       └── export_parquet.py    # Xuất 7 bảng + upload HF                  [P4-02]
 │
-├── tests/                       # Thư mục script sinh mock & unit tests
-│   ├── make_mock.py             # Sinh dữ liệu giả (mock data)             [P1-02]
+├── tests/                       # Script sinh mock, mock data và unit test
+│   ├── make_mock.py             # Sinh mock data (dạng làm việc + Parquet) [P1-02]
 │   ├── fetch_real_samples.py    # Tải 2-3 bài thật mẫu từ arXiv            [P1-02]
-│   ├── mock_data/               # Thư mục dữ liệu mock (ĐƯỢC commit)
-│   │   └── real/                # Mã nguồn LaTeX thật mẫu (đã lọc ảnh)
+│   ├── mock_data/               # Mock nhỏ sinh bởi make_mock.py (ĐƯỢC commit)
+│   │   ├── <yymm-id>/           # Mỗi bài một folder: v1/, v2/, metadata.json,
+│   │   │                        #   references.json, hierarchy.json, refs.bib
+│   │   ├── parquet/             # 7 bảng Parquet: parquet/<table>/part-000.parquet
+│   │   └── real/                # Bài thật do fetch_real_samples.py tải (KHÔNG commit)
 │   ├── common/                  # Chứa các file unit test (test_schemas, test_utils_io, test_make_mock...)
 │   ├── m1_crawling/             # Unit test cho module M1
 │   ├── m2_parsing/              # Unit test cho module M2

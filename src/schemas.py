@@ -5,37 +5,13 @@ ngay từ Tuần 1 để M1, M2, M3 code song song mà không phải chờ nhau.
 
 """
 
-import re
 from enum import StrEnum
 from typing import Annotated, Literal
 
 import pyarrow as pa
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
-# ID mới: YYMM.NNNN (trước 2015) hoặc YYMM.NNNNN (từ 2015). Ví dụ "2310.12345".
-NEW_ID_PATTERN = re.compile(r"^\d{4}\.\d{4,5}$")
-# ID cũ (trước 2007): archive[.XX]/YYMMNNN. Ví dụ "hep-th/9901001", "math.GT/0309136".
-OLD_ID_PATTERN = re.compile(r"^[a-z\-]+(\.[A-Z]{2})?/\d{7}$")
-
-
-def validate_arxiv_id(value: str) -> str:
-    """Kiểm tra arxiv_id đúng dạng chuẩn (không có hậu tố version).
-
-    Chặn sớm các lỗi hay gặp như "2310-12345" (dạng folder) hay "2310.12345v2" lọt vào dữ
-    liệu, vì lỗi này sẽ làm join giữa các bảng âm thầm sai.
-
-    Args:
-        value: Chuỗi ID cần kiểm tra.
-
-    Returns:
-        Chính chuỗi đó nếu hợp lệ.
-
-    Raises:
-        ValueError: Khi ID không khớp dạng mới lẫn dạng cũ.
-    """
-    if not (NEW_ID_PATTERN.match(value) or OLD_ID_PATTERN.match(value)):
-        raise ValueError(f"arXiv ID không hợp lệ: {value!r}")
-    return value
+from src.common.ids import validate_arxiv_id
 
 
 def make_element_id(arxiv_id: str, local_id: str) -> str:

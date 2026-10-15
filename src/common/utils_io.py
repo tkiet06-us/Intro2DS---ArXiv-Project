@@ -1,42 +1,15 @@
-"""Hàm tiện ích I/O dùng chung: đổi tên folder theo arxiv_id, Tiện ích I/O: đọc/ghi JSON, checkpoint, logging."""
+"""Hàm tiện ích I/O dùng chung: đọc/ghi JSON an toàn, và cửa vào của hàm đổi dạng ID."""
 
 import json
 import os
 from pathlib import Path
 from typing import Any
 
+# Logic đổi ID nằm ở ids.py (một nguồn sự thật); re-export để code gọi qua utils_io như README
+# mục 6.9.2 mô tả vẫn chạy.
+from src.common.ids import from_folder_name, to_folder_name
 
-def to_folder_name(arxiv_id: str) -> str:
-    """Đổi arxiv_id chuẩn sang tên folder (dạng "yymm-id" của đề).
-
-    Đây là hàm DUY NHẤT được phép đổi dạng ID (README mục 6.9.2). Nếu mỗi người tự viết một
-    kiểu thì "2310.12345" và "2310-12345" sẽ lẫn lộn giữa các module và join dữ liệu bị lệch.
-
-    Args:
-        arxiv_id: Mã chuẩn, ví dụ "2310.12345" hoặc "hep-th/9901001".
-
-    Returns:
-        "2310-12345" hoặc "hep-th_9901001" (dấu "/" không hợp lệ trong tên folder).
-    """
-    if "/" in arxiv_id:
-        return arxiv_id.replace("/", "_")
-    return arxiv_id.replace(".", "-")
-
-
-def from_folder_name(folder_name: str) -> str:
-    """Đổi ngược tên folder về arxiv_id chuẩn (dùng cho key của references.json).
-
-    Phép đổi này không mơ hồ: ID cũ luôn chứa "_" (từ "/"), còn ID mới thì không.
-
-    Args:
-        folder_name: "2310-12345" hoặc "hep-th_9901001".
-
-    Returns:
-        "2310.12345" hoặc "hep-th/9901001".
-    """
-    if "_" in folder_name:
-        return folder_name.replace("_", "/")
-    return folder_name.replace("-", ".", 1)
+__all__ = ["from_folder_name", "read_json", "to_folder_name", "write_json"]
 
 
 def write_json(path: Path, data: Any) -> None:

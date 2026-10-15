@@ -7,7 +7,7 @@ Mock sinh ra CẢ HAI dạng để mỗi thành viên dùng ngay, không chờ M
 - Dạng Parquet 7 bảng (cho exporter ở P4-02): parquet/<table>/part-000.parquet.
 
 Mock cố tình KHÔNG "đẹp": có ID cũ, bài PDF-only, entry thiếu năm, ref thiếu tiêu đề...
-vì dữ liệu quá sạch sẽ che mất bug của parser/matcher (xem bước 3 trong hướng dẫn P1-02).
+vì dữ liệu quá sạch sẽ che mất bug của parser/matcher.
 """
 
 import argparse
@@ -25,7 +25,8 @@ from pydantic import BaseModel
 # sẽ không thấy package `src`. Thêm thư mục gốc repo để lệnh trong README chạy được.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.common.utils_io import to_folder_name, write_json  # noqa: E402
+from src.common.ids import to_folder_name  # noqa: E402
+from src.common.utils_io import write_json  # noqa: E402
 from src.schemas import (  # noqa: E402
     MODELS,
     PARQUET_SCHEMAS,

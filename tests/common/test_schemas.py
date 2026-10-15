@@ -41,7 +41,7 @@ def test_valid_arxiv_ids_accepted(arxiv_id):
     assert validate_arxiv_id(arxiv_id) == arxiv_id
 
 
-@pytest.mark.parametrize("arxiv_id", ["2310-12345", "2310.12345v2", "hep-th_9901001", ""])
+@pytest.mark.parametrize("arxiv_id", ["2310-12345", "2310.12345v2", "hep-th_9901001", "", "2310.12345\n"])
 def test_invalid_arxiv_ids_rejected(arxiv_id):
     # Dạng folder, có hậu tố version, hoặc rỗng đều phải bị chặn.
     with pytest.raises(ValueError):
