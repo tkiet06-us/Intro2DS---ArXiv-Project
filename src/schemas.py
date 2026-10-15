@@ -6,10 +6,10 @@ ngay từ Tuần 1 để M1, M2, M3 code song song mà không phải chờ nhau.
 """
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 import pyarrow as pa
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from src.common.ids import validate_arxiv_id
 
@@ -117,12 +117,29 @@ class Prediction(FlatModel):
     arxiv_id: ArxivId
     partition: Literal["train", "valid", "test"]
     citation_key: NonEmptyStr
-    groundtruth_arxiv_id: str | None = None
-    cand_1: str | None = None
-    cand_2: str | None = None
-    cand_3: str | None = None
-    cand_4: str | None = None
-    cand_5: str | None = None
+    groundtruth_arxiv_id: ArxivId | None = None
+    cand_1: ArxivId | None = None
+    cand_2: ArxivId | None = None
+    cand_3: ArxivId | None = None
+    cand_4: ArxivId | None = None
+    cand_5: ArxivId | None = None
+
+    @model_validator(mode="after")
+    def candidates_are_ranked(self) -> Self:
+        """Đảm bảo top-5 liền mạch từ hạng 1 và không có ứng viên trùng nhau.
+
+        Raises:
+            ValueError: Khi có cand null nằm giữa các cand có giá trị, hoặc có ứng viên trùng.
+        """
+        cands = [self.cand_1, self.cand_2, self.cand_3, self.cand_4, self.cand_5]
+        filled = [cand for cand in cands if cand is not None]
+        # Danh sách xếp hạng không có "lỗ hổng": cand_3 có giá trị thì cand_1, cand_2 cũng phải có.
+        if cands[: len(filled)] != filled:
+            raise ValueError("cand null nằm giữa: top-5 phải liền mạch từ cand_1")
+        # Một bài xuất hiện hai lần sẽ làm hạng trong MRR khó diễn giải.
+        if len(filled) != len(set(filled)):
+            raise ValueError("ứng viên trùng nhau trong top-5")
+        return self
 
 
 class Source(FlatModel):
