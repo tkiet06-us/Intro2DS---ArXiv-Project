@@ -159,7 +159,7 @@ Có IDD:        M1 ──────────────────►
 ## 🗂 3. Cấu trúc thư mục
 
 ```
-arxiv-pipeline/
+Intro2DS---ArXiv-Project/
 ├── README.md                    # Tài liệu này
 ├── CONTRIBUTING.md              # Quy tắc đóng góp
 ├── requirements.txt             # Thư viện Python
@@ -526,12 +526,12 @@ Khi kích hoạt thành công, đầu dòng lệnh hiện `(.venv)`. Thoát bằ
 ### 9.4 Cách B – `conda` (Anaconda / Miniconda)
 
 ```bash
-conda create -n arxiv-pipeline python=3.11 -y
-conda activate arxiv-pipeline
+conda create -n Intro2DS---ArXiv-Project python=3.11 -y
+conda activate Intro2DS---ArXiv-Project
 pip install -r requirements.txt
 ```
 
-Thoát: `conda deactivate`. Xóa môi trường: `conda remove -n arxiv-pipeline --all`.
+Thoát: `conda deactivate`. Xóa môi trường: `conda remove -n Intro2DS---ArXiv-Project --all`.
 
 ### 9.5 Cài nhanh bằng script (Linux/macOS)
 
