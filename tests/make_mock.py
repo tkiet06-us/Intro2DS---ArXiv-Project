@@ -4,7 +4,7 @@ Chạy từ thư mục gốc repo: python tests/make_mock.py --out tests/mock_da
 
 Mock sinh ra CẢ HAI dạng để mỗi thành viên dùng ngay, không chờ M1 crawl xong (IDD):
 - Dạng làm việc (cho M2, M3): <yymm-id>/v1/, v2/, metadata.json, references.json, ...
-- Dạng Parquet 7 bảng (cho exporter ở P4-02): parquet/<table>/part-000.parquet.
+- Dạng Parquet 6 bảng (cho exporter ở P4-02): parquet/<table>/part-000.parquet.
 
 Mock cố tình KHÔNG "đẹp": có ID cũ, bài PDF-only, entry thiếu năm, ref thiếu tiêu đề...
 vì dữ liệu quá sạch sẽ che mất bug của parser/matcher.
@@ -30,14 +30,13 @@ from src.common.utils_io import write_json  # noqa: E402
 from src.schemas import (  # noqa: E402
     MODELS,
     PARQUET_SCHEMAS,
-    BibtexEntry,
+    Bibtex,
     Element,
-    ElementParent,
+    Hierarchy,
     Kind,
     Paper,
-    PaperReference,
     Prediction,
-    Source,
+    Reference,
     make_element_id,
 )
 
@@ -98,8 +97,8 @@ class MockPaper:
     paper: Paper
     sources: dict[int, dict[str, str]] = field(default_factory=dict)  # version -> {file: text}
     trees: dict[int, list[Node]] = field(default_factory=dict)  # version -> các nút
-    bib_entries: list[BibtexEntry] = field(default_factory=list)
-    references: list[PaperReference] = field(default_factory=list)
+    bibtex: list[Bibtex] = field(default_factory=list)
+    references: list[Reference] = field(default_factory=list)
     predictions: list[Prediction] = field(default_factory=list)
 
 
@@ -111,9 +110,11 @@ def build_mock_papers() -> list[MockPaper]:
     """
     # --- Bài A: 2 version, một câu giống hệt, một câu khác ---
     a_id = "2310.12345"
-    doc, sec = Node("doc", Kind.DOCUMENT, "Mock Paper 1", None), "sec1"
+    # Mỗi version có nút gốc riêng (root1, root2) ; phần còn lại giống hệt
+    # nên dùng chung element_id (đây chính là full-text dedup).
+    sec = "h1"
     shared = [
-        Node(sec, Kind.SECTION, "Introduction", "doc"),
+        Node(sec, Kind.HEADING, "Introduction", None),  # parent gắn theo từng version ở dưới
         Node("s1", Kind.SENTENCE, "We study matching.", sec),
         Node("f1", Kind.FORMULA, r"\begin{equation} E = mc^2 \end{equation}", sec),
     ]
@@ -127,11 +128,19 @@ def build_mock_papers() -> list[MockPaper]:
         ),
         sources={1: {"main.tex": TEX_A_V1}, 2: {"main.tex": TEX_A_V2}},
         trees={
-            1: [doc, *shared, Node("s2", Kind.SENTENCE, "It works well.", sec)],
-            2: [doc, *shared, Node("s2b", Kind.SENTENCE, "It works very well.", sec)],
+            1: [
+                Node("root1", Kind.DOCUMENT, "Version 1 root", None),
+                *_attach(shared, "root1"),
+                Node("s2", Kind.SENTENCE, "It works well.", sec),
+            ],
+            2: [
+                Node("root2", Kind.DOCUMENT, "Version 2 root", None),
+                *_attach(shared, "root2"),
+                Node("s2b", Kind.SENTENCE, "It works very well.", sec),
+            ],
         },
-        bib_entries=[
-            BibtexEntry(
+        bibtex=[
+            Bibtex(
                 arxiv_id=a_id,
                 citation_key="foo",
                 entry_type="misc",
@@ -141,14 +150,24 @@ def build_mock_papers() -> list[MockPaper]:
             )
         ],
         references=[
-            PaperReference(
+            Reference(
                 arxiv_id=a_id,
                 ref_arxiv_id="1706.03762",
                 ref_title="Attention Is All You Need",
                 ref_authors=["Vaswani"],
                 ref_submission_date="2017-06-12",
                 ref_s2_id="204e3073870fae3d05bcbc2f6a8e263d9b72e776",
-            )
+            ),
+            # Ứng viên của predictions chỉ được lấy từ các reference CỦA CÙNG bài (đề M3), nên
+            # mọi cand dùng trong mock đều phải có mặt ở đây.
+            Reference(
+                arxiv_id=a_id,
+                ref_arxiv_id="1810.04805",
+                ref_title="BERT: Pre-training of Deep Bidirectional Transformers",
+                ref_authors=["Jacob Devlin"],
+                ref_submission_date="2018-10-11",
+                ref_s2_id="df2b0e26d0599ce3e70df8a9da02e51594e0e992",
+            ),
         ],
         predictions=[
             Prediction(
@@ -175,14 +194,14 @@ def build_mock_papers() -> list[MockPaper]:
         sources={1: {"main.tex": TEX_B_MAIN, "refs.bib": ""}},  # refs.bib điền ở dưới
         trees={
             1: [
-                Node("doc", Kind.DOCUMENT, "Mock Paper 2", None),
-                Node("sec1", Kind.SECTION, "Method", "doc"),
-                Node("s1", Kind.SENTENCE, "Our method is simple.", "sec1"),
-                Node("fig1", Kind.FIGURE, r"\begin{figure}\caption{Overview.}\end{figure}", "sec1"),
+                Node("root1", Kind.DOCUMENT, "Version 1 root", None),
+                Node("h1", Kind.HEADING, "Method", "root1"),
+                Node("s1", Kind.SENTENCE, "Our method is simple.", "h1"),
+                Node("fig1", Kind.FIGURE, r"\begin{figure}\caption{Overview.}\end{figure}", "h1"),
             ]
         },
-        bib_entries=[
-            BibtexEntry(
+        bibtex=[
+            Bibtex(
                 arxiv_id=b_id,
                 citation_key="bert",
                 entry_type="article",
@@ -191,12 +210,12 @@ def build_mock_papers() -> list[MockPaper]:
                 year=2019,
                 journal="NAACL",
             ),
-            BibtexEntry(  # thiếu year/title: kiểm tra Optional hoạt động
+            Bibtex(  # thiếu year/title: kiểm tra Optional hoạt động
                 arxiv_id=b_id, citation_key="noyear", entry_type="misc", authors=["Unknown"]
             ),
         ],
         references=[
-            PaperReference(
+            Reference(
                 arxiv_id=b_id,
                 ref_arxiv_id="1810.04805",
                 ref_title="BERT: Pre-training of Deep Bidirectional Transformers",
@@ -204,7 +223,7 @@ def build_mock_papers() -> list[MockPaper]:
                 ref_submission_date="2018-10-11",
                 ref_s2_id="df2b0e26d0599ce3e70df8a9da02e51594e0e992",
             ),
-            PaperReference(  # ref thiếu tiêu đề/tác giả/ngày: S2 hay trả về như vậy
+            Reference(  # ref thiếu tiêu đề/tác giả/ngày: S2 hay trả về như vậy
                 arxiv_id=b_id, ref_arxiv_id="1301.3781", ref_s2_id="330da625c15427c6e42ccfa3b747fb"
             ),
         ],
@@ -223,7 +242,7 @@ def build_mock_papers() -> list[MockPaper]:
         ],
     )
     # refs.bib trong source là text thật, sinh từ chính các entry để hai bên luôn khớp.
-    paper_b.sources[1]["refs.bib"] = "\n".join(to_bibtex(e) for e in paper_b.bib_entries)
+    paper_b.sources[1]["refs.bib"] = "\n".join(to_bibtex(e) for e in paper_b.bibtex)
 
     # --- Bài C: ID cũ trước 2007, \input nhiều file ---
     c_id = "hep-th/9901001"
@@ -237,13 +256,13 @@ def build_mock_papers() -> list[MockPaper]:
         sources={1: {"main.tex": TEX_C_MAIN, "intro.tex": TEX_C_INTRO}},
         trees={
             1: [
-                Node("doc", Kind.DOCUMENT, "Mock Paper 3 (old ID)", None),
-                Node("sec1", Kind.SECTION, "Introduction", "doc"),
-                Node("s1", Kind.SENTENCE, "Strings are fun.", "sec1"),
+                Node("root1", Kind.DOCUMENT, "Version 1 root", None),
+                Node("h1", Kind.HEADING, "Introduction", "root1"),
+                Node("s1", Kind.SENTENCE, "Strings are fun.", "h1"),
             ]
         },
-        bib_entries=[
-            BibtexEntry(
+        bibtex=[
+            Bibtex(
                 arxiv_id=c_id,
                 citation_key="witten",
                 entry_type="misc",
@@ -253,7 +272,7 @@ def build_mock_papers() -> list[MockPaper]:
             )
         ],
         references=[
-            PaperReference(
+            Reference(
                 arxiv_id=c_id,
                 ref_arxiv_id="hep-th/9503124",  # ID cũ cũng xuất hiện ở phía được trích dẫn
                 ref_title="String Theory Dynamics In Various Dimensions",
@@ -273,19 +292,34 @@ def build_mock_papers() -> list[MockPaper]:
         ],
     )
 
-    # --- Bài D: PDF-only. Giữ "record rỗng": có metadata, KHÔNG có source/tree/bib ---
+    # --- Bài D: PDF-only. Giữ "record rỗng": có metadata và một version v1 RỖNG (không có
+    # .tex/.bib), không có tree/bib. M1/M2 yêu cầu ghi nhận version rỗng chứ không bỏ qua. ---
     paper_d = MockPaper(
+        sources={1: {}},
         paper=Paper(
             arxiv_id="2402.99999",
             title="Mock Paper 4 (PDF only)",
             authors=["Eve"],
             submission_date="2024-02-10",
-        )
+        ),
     )
     return [paper_a, paper_b, paper_c, paper_d]
 
 
-def to_bibtex(entry: BibtexEntry) -> str:
+def _attach(nodes: list[Node], parent: str) -> list[Node]:
+    """Gắn các nút chưa có cha (parent None, trừ gốc) vào nút `parent` của một version.
+
+    Args:
+        nodes: Các nút dùng chung giữa nhiều version.
+        parent: local_id của nút gốc của version đang dựng.
+
+    Returns:
+        Danh sách nút mới với cha đã được gán.
+    """
+    return [node._replace(parent=node.parent or parent) for node in nodes]
+
+
+def to_bibtex(entry: Bibtex) -> str:
     """Dựng chuỗi BibTeX từ một entry (chỉ ghi các trường có giá trị).
 
     Args:
@@ -309,7 +343,7 @@ def to_bibtex(entry: BibtexEntry) -> str:
 
 def flatten_trees(
     arxiv_id: str, trees: dict[int, list[Node]]
-) -> tuple[list[Element], list[ElementParent]]:
+) -> tuple[list[Element], list[Hierarchy]]:
     """Biến các cây theo version thành dòng của bảng elements và element_parents.
 
     Cùng element_id thì chỉ giữ MỘT dòng trong elements (full-text dedup giữa các version),
@@ -326,7 +360,7 @@ def flatten_trees(
         ValueError: Khi hai nút cùng id nhưng khác nội dung (mock tự mâu thuẫn).
     """
     elements: dict[str, Element] = {}
-    parents: list[ElementParent] = []
+    parents: list[Hierarchy] = []
     for version, nodes in trees.items():
         for node in nodes:
             element_id = make_element_id(arxiv_id, node.local_id)
@@ -339,7 +373,7 @@ def flatten_trees(
             # Nút gốc không có cha nên không sinh dòng (quyết định số 3 trong schemas.py).
             if node.parent is not None:
                 parents.append(
-                    ElementParent(
+                    Hierarchy(
                         arxiv_id=arxiv_id,
                         version=version,
                         element_id=element_id,
@@ -349,7 +383,7 @@ def flatten_trees(
     return list(elements.values()), parents
 
 
-def build_hierarchy_json(elements: list[Element], parents: list[ElementParent]) -> dict:
+def build_hierarchy_json(elements: list[Element], parents: list[Hierarchy]) -> dict:
     """Dựng hierarchy.json theo định dạng gợi ý của M2 từ các dòng bảng.
 
     Sinh từ cùng danh sách dòng với Parquet nên hai dạng dữ liệu không thể lệch nhau.
@@ -367,7 +401,7 @@ def build_hierarchy_json(elements: list[Element], parents: list[ElementParent]) 
     return {"elements": {e.element_id: e.content for e in elements}, "hierarchy": hierarchy}
 
 
-def references_to_json(references: list[PaperReference]) -> dict[str, dict]:
+def references_to_json(references: list[Reference]) -> dict[str, dict]:
     """Dựng references.json: key là ID dạng "yymm-id", value là metadata (theo đề M1).
 
     Args:
@@ -395,16 +429,16 @@ def write_working_format(out: Path, mock: MockPaper, rows: tuple[list, list]) ->
     folder = out / to_folder_name(mock.paper.arxiv_id)
     folder.mkdir(parents=True, exist_ok=True)  # bài PDF-only vẫn có folder
     for version, files in mock.sources.items():
+        # Tạo folder version trước: version rỗng (PDF-only) vẫn phải có "record rỗng".
+        (folder / f"v{version}").mkdir(parents=True, exist_ok=True)
         for filename, text in files.items():
-            path = folder / f"v{version}" / filename
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
+            (folder / f"v{version}" / filename).write_text(text, encoding="utf-8")
     write_json(folder / "metadata.json", mock.paper.model_dump(mode="json"))
     write_json(folder / "references.json", references_to_json(mock.references))
     if mock.trees:
         write_json(folder / "hierarchy.json", build_hierarchy_json(*rows))
-    if mock.bib_entries:
-        bib_text = "\n".join(to_bibtex(e) for e in mock.bib_entries)
+    if mock.bibtex:
+        bib_text = "\n".join(to_bibtex(e) for e in mock.bibtex)
         (folder / "refs.bib").write_text(bib_text, encoding="utf-8")
 
 
@@ -431,7 +465,7 @@ def write_parquet(out: Path, name: str, rows: list[BaseModel]) -> None:
 
 
 def generate(out: Path) -> None:
-    """Sinh toàn bộ mock (dạng làm việc + 7 bảng Parquet) vào thư mục `out`.
+    """Sinh toàn bộ mock (dạng làm việc + 6 bảng Parquet) vào thư mục `out`.
 
     Args:
         out: Thư mục đích, ví dụ tests/mock_data.
@@ -443,15 +477,10 @@ def generate(out: Path) -> None:
         write_working_format(out, mock, (elements, parents))
         tables["papers"].append(mock.paper)
         tables["elements"].extend(elements)
-        tables["element_parents"].extend(parents)
-        tables["bibtex_entries"].extend(mock.bib_entries)
-        tables["paper_references"].extend(mock.references)
+        tables["hierarchy"].extend(parents)
+        tables["bibtex"].extend(mock.bibtex)
+        tables["references"].extend(mock.references)
         tables["predictions"].extend(mock.predictions)
-        for version, files in mock.sources.items():
-            tables["sources"].extend(
-                Source(arxiv_id=arxiv_id, version=version, filename=name, content=text)
-                for name, text in files.items()
-            )
     for name, rows in tables.items():
         write_parquet(out, name, rows)
         logger.info("Đã ghi bảng %s (%d dòng)", name, len(rows))

@@ -1,4 +1,4 @@
-"""Schema dữ liệu chung của dự án: 7 bảng Parquet của M3 (task P1-02).
+"""Schema dữ liệu chung của dự án: 6 bảng Parquet của dataset cuối (task P1-02).
 
 Vì sao cần file này: theo nguyên tắc IDD (README mục 1.2), cả nhóm chốt "hình dạng" dữ liệu
 ngay từ Tuần 1 để M1, M2, M3 code song song mà không phải chờ nhau.
@@ -11,20 +11,24 @@ from typing import Annotated, Literal, Self
 import pyarrow as pa
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
-from src.common.ids import validate_arxiv_id
+from src.common.ids import to_folder_name, validate_arxiv_id
 
 
 def make_element_id(arxiv_id: str, local_id: str) -> str:
-    """Ghép element_id toàn cục từ arxiv_id và id cục bộ trong bài.
+    """Ghép element_id toàn cục từ bài và id cục bộ trong bài.
+
+    element_id bắt đầu bằng "publication key" ("2310-12345#root1"), nên
+    dùng đúng dạng tên folder thay vì arxiv_id chuẩn. Việc đổi dạng đi qua to_folder_name để
+    vẫn chỉ có MỘT nơi đổi ID (README mục 6.9.2) và để ID sai bị chặn ngay.
 
     Args:
         arxiv_id: Mã arXiv chuẩn của bài.
         local_id: Id phân biệt các element trong cùng một bài, ví dụ "s1".
 
     Returns:
-        Chuỗi dạng "2310.12345#s1".
+        Chuỗi dạng "2310-12345#s1" (hoặc "hep-th_9901001#s1" với ID cũ).
     """
-    return f"{arxiv_id}#{local_id}"
+    return f"{to_folder_name(arxiv_id)}#{local_id}"
 
 
 # Annotated gắn validator vào KIỂU, nên dùng lại cho mọi trường ID mà không phải lặp code.
@@ -39,16 +43,13 @@ Version = Annotated[int, Field(ge=1)]
 class Kind(StrEnum):
     """Loại element trong cây phân cấp (cột `kind` của bảng elements)."""
 
-    DOCUMENT = "document"
-    SECTION = "section"
-    SUBSECTION = "subsection"
-    PARAGRAPH = "paragraph"
-    ITEMIZE = "itemize"
+    DOCUMENT = "document"  # nút gốc của mỗi version
+    HEADING = "heading"  # mọi cấp tiêu đề; độ sâu nằm ở cây hierarchy
+    ITEMIZE = "itemize"  # khối \begin{itemize}: nút cha của các item
     ITEM = "item"
-    SENTENCE = "sentence"
-    FORMULA = "formula"
-    FIGURE = "figure"
-    TABLE = "table"
+    SENTENCE = "sentence"  # lá
+    FORMULA = "formula"  # lá: công thức khối
+    FIGURE = "figure"  # lá: hình, và cả bảng (đề coi Table là một loại Figure)
 
 
 class FlatModel(BaseModel):
@@ -77,17 +78,16 @@ class Element(FlatModel):
     content: str
 
 
-class ElementParent(FlatModel):
-    """Một dòng của bảng `element_parents`: cha của element trong từng version."""
-
+class Hierarchy(FlatModel):
+    """Một dòng của bảng `hierarchy`: cạnh element-cha của từng version."""
     arxiv_id: ArxivId
     version: Version
     element_id: NonEmptyStr
     parent_id: NonEmptyStr
 
 
-class BibtexEntry(FlatModel):
-    """Một dòng của bảng `bibtex_entries` (các trường BibTeX đã chuẩn hóa, phẳng)."""
+class Bibtex(FlatModel):
+    """Một dòng của bảng `bibtex` (các trường BibTeX đã chuẩn hóa, phẳng)."""
 
     arxiv_id: ArxivId
     citation_key: NonEmptyStr
@@ -100,8 +100,8 @@ class BibtexEntry(FlatModel):
     url: str | None = None
 
 
-class PaperReference(FlatModel):
-    """Một dòng của bảng `paper_references`: một cặp (bài trích dẫn, bài được trích dẫn)."""
+class Reference(FlatModel):
+    """Một dòng của bảng `references`: một cặp (bài trích dẫn, bài được trích dẫn)."""
 
     arxiv_id: ArxivId  # bài đang trích dẫn
     ref_arxiv_id: ArxivId  # bài được trích dẫn (ref không có arXiv ID thì bị loại từ M1)
@@ -142,15 +142,6 @@ class Prediction(FlatModel):
         return self
 
 
-class Source(FlatModel):
-    """Một dòng của bảng `sources`: một file LaTeX/BibTeX gốc của một version."""
-
-    arxiv_id: ArxivId
-    version: Version
-    filename: str
-    content: str
-
-
 # ---- Schema Parquet tường minh: nguồn sự thật cho kiểu cột khi ghi file .parquet ----
 # Pydantic kiểm tra dữ liệu trong code, còn Parquet cần kiểu cột cụ thể (int32, dictionary...).
 # Ta giữ cả hai và dùng tests/test_schemas.py để đảm bảo chúng không lệch nhau.
@@ -179,17 +170,17 @@ PARQUET_SCHEMAS: dict[str, pa.Schema] = {
             pa.field("content", _STR),
         ]
     ),
-    "element_parents": pa.schema(
+    "hierarchy": pa.schema(
         [
-            pa.field("arxiv_id", _STR),
+            pa.field("arxiv_id", _STR, nullable=False),
             pa.field("version", pa.int32()),
             pa.field("element_id", _STR, nullable=False),
             pa.field("parent_id", _STR, nullable=False),
         ]
     ),
-    "bibtex_entries": pa.schema(
+    "bibtex": pa.schema(
         [
-            pa.field("arxiv_id", _STR),
+            pa.field("arxiv_id", _STR, nullable=False),
             pa.field("citation_key", _STR, nullable=False),
             pa.field("entry_type", _DICT),
             pa.field("title", _STR),
@@ -200,9 +191,9 @@ PARQUET_SCHEMAS: dict[str, pa.Schema] = {
             pa.field("url", _STR),
         ]
     ),
-    "paper_references": pa.schema(
+    "references": pa.schema(
         [
-            pa.field("arxiv_id", _STR),
+            pa.field("arxiv_id", _STR, nullable=False),
             pa.field("ref_arxiv_id", _STR, nullable=False),
             pa.field("ref_title", _STR),
             pa.field("ref_authors", _STR_LIST),
@@ -219,23 +210,14 @@ PARQUET_SCHEMAS: dict[str, pa.Schema] = {
         ]
         + [pa.field(f"cand_{rank}", _STR) for rank in range(1, 6)]
     ),
-    "sources": pa.schema(
-        [
-            pa.field("arxiv_id", _STR),
-            pa.field("version", pa.int32()),
-            pa.field("filename", _STR),
-            pa.field("content", _STR),
-        ]
-    ),
 }
 
-# Ánh xạ tên bảng -> model Pydantic, để code chung (mock, exporter) duyệt qua cả 7 bảng.
+# Ánh xạ tên bảng -> model Pydantic, để code chung (mock, exporter) duyệt qua cả 6 bảng.
 MODELS: dict[str, type[FlatModel]] = {
     "papers": Paper,
     "elements": Element,
-    "element_parents": ElementParent,
-    "bibtex_entries": BibtexEntry,
-    "paper_references": PaperReference,
+    "hierarchy": Hierarchy,
+    "bibtex": Bibtex,
+    "references": Reference,
     "predictions": Prediction,
-    "sources": Source,
 }

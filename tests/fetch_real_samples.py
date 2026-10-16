@@ -29,8 +29,9 @@ SRC_URL = "https://export.arxiv.org/src/{arxiv_id}v{version}"
 DELAY_SECONDS = 3  # luật của arXiv: >= 3 giây giữa 2 request
 TIMEOUT_SECONDS = 60  # không để request treo vô hạn
 MAX_RETRIES = 3
-# Chỉ giữ file văn bản. Ảnh bị loại để repo nhẹ; lệnh \includegraphics vẫn nằm trong .tex.
-TEXT_SUFFIXES = {".tex", ".bib", ".bbl", ".sty", ".cls", ".bst", ".def", ".cfg", ".txt"}
+# Đề M1: chỉ trích xuất file .tex và .bib khỏi gói nguồn, để ảnh và file phụ không vào corpus.
+# Lệnh \includegraphics trong .tex vẫn giữ nguyên vì M2 parse cấu trúc chứ không đọc ảnh.
+TEXT_SUFFIXES = {".tex", ".bib"}
 
 
 def polite_get(url: str, user_agent: str) -> bytes:

@@ -3,7 +3,15 @@
 import pytest
 from pydantic import ValidationError
 
-from src.schemas import MODELS, PARQUET_SCHEMAS, Paper, Prediction, validate_arxiv_id
+from src.schemas import (
+    MODELS,
+    PARQUET_SCHEMAS,
+    Kind,
+    Paper,
+    Prediction,
+    make_element_id,
+    validate_arxiv_id,
+)
 
 CAND_FIELDS = ["groundtruth_arxiv_id", "cand_1", "cand_2", "cand_3", "cand_4", "cand_5"]
 
@@ -27,6 +35,30 @@ def test_non_null_parquet_columns_are_required_in_model():
         for column in PARQUET_SCHEMAS[name]:
             if not column.nullable:
                 assert model.model_fields[column.name].is_required(), (name, column.name)
+
+
+def test_models_and_parquet_schemas_cover_same_tables():
+    assert set(MODELS) == set(PARQUET_SCHEMAS)
+
+
+def test_arxiv_id_is_non_null_where_spec_requires():
+    # Đề M1/M2: arxiv_id non-null ở papers, references, elements, hierarchy, bibtex.
+    for name in ["papers", "references", "elements", "hierarchy", "bibtex", "predictions"]:
+        assert not PARQUET_SCHEMAS[name].field("arxiv_id").nullable, name
+
+
+def test_element_id_starts_with_publication_key():
+    assert make_element_id("2310.12345", "root1") == "2310-12345#root1"
+    assert make_element_id("hep-th/9901001", "s1") == "hep-th_9901001#s1"
+
+
+def test_element_id_rejects_malformed_arxiv_id():
+    with pytest.raises(ValueError):
+        make_element_id("2310-12345", "s1")
+
+
+def test_kind_contains_spec_example_values():
+    assert {"document", "heading", "sentence"} <= {k.value for k in Kind}
 
 
 def test_authors_must_be_list():
