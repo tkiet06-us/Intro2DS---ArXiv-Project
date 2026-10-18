@@ -1,55 +1,55 @@
-# P1-04: LaTeX Tree Spec
+# P1-04: Đặt tả cú pháp & quy ước về cây phân cấp theo mã nguồn LaTeX
 
 ---
 
 ## 📑 Mục lục
 
-1. [Mục đích và Phạm vi](#1-mục-đích-và-phạm-vi)
+1. [Mục đích và phạm vi](#1-mục-đích-và-phạm-vi)
    - 1.1 [Mục đích](#11-mục-đích)
    - 1.2 [Vị trí trong Pipeline xử lý](#12-vị-trí-trong-pipeline-xử-lý)
-   - 1.3 [Phạm vi và Ranh giới](#13-phạm-vi-và-ranh-giới)
-2. [Các Nguyên tắc Bất biến Cốt lõi (Core Invariants)](#2-các-nguyên-tắc-bất-biến-cốt-lõi-core-invariants)
-3. [Mô hình Dữ liệu: Cây lồng nhau & Bảng Parquet](#3-mô-hình-dữ-liệu-cây-lồng-nhau--bảng-parquet)
-   - 3.1 [Quy chuẩn Định dạng Lưu trữ (Storage Format Specification)](#31-quy-chuẩn-định-dạng-lưu-trữ-storage-format-specification)
-   - 3.2 [Cấu trúc Dataset Repository & Hệ thống 6 Bảng Parquet](#32-cấu-trúc-dataset-repository--hệ-thống-6-bảng-parquet)
-   - 3.3 [Nguyên tắc Cột phẳng và Kiểu nguyên thủy (Flat & Primitive Rules)](#33-nguyên-tắc-cột-phẳng-và-kiểu-nguyên-thủy-flat--primitive-rules)
+   - 1.3 [Phạm vi và ranh giới](#13-phạm-vi-và-ranh-giới)
+2. [Các nguyên tắc bất biến cốt lõi](#2-các-nguyên-tắc-bất-biến-cốt-lõi)
+3. [Mô hình dữ liệu: cây lồng nhau và bảng Parquet](#3-mô-hình-dữ-liệu-cây-lồng-nhau--bảng-parquet)
+   - 3.1 [Quy chuẩn định dạng lưu trữ](#31-quy-chuẩn-định-dạng-lưu-trữ)
+   - 3.2 [Cấu trúc Dataset Repository và hệ thống 6 bảng Parquet](#32-cấu-trúc-dataset-repository--hệ-thống-6-bảng-parquet)
+   - 3.3 [Nguyên tắc cột phẳng và kiểu nguyên thủy](#33-nguyên-tắc-cột-phẳng-và-kiểu-nguyên-thủy)
    - 3.4 [Tập giá trị chuẩn cho thuộc tính `kind`](#34-tập-giá-trị-chuẩn-cho-thuộc-tính-kind)
-   - 3.5 [Quy ước định danh `element_id` và tính Xác định (Deterministic ID)](#35-quy-ước-định-danh-element_id-và-tính-xác-định-deterministic-id)
-4. [Thuật toán & Quy tắc Bóc tách Chi tiết](#4-thuật-toán--quy-tắc-bóc-tách-chi-tiết)
-   - 4.1 [Tự nhận diện Cấp bậc Tiêu đề (Dynamic Heading Hierarchy)](#41-tự-nhận-diện-cấp-bậc-tiêu-đề-dynamic-heading-hierarchy)
-   - 4.2 [Dựng quan hệ Cha – Con bằng Ngăn xếp (Stack-based Construction)](#42-dựng-quan-hệ-cha--con-bằng-ngăn-xếp-stack-based-construction)
-   - 4.3 [Chuẩn hóa Tiêu đề Section (`title`)](#43-chuẩn-hóa-tiêu-đề-section-title)
-5. [Quy tắc Bóc tách các Nút Lá và Khối Nội dung](#5-quy-tắc-bóc-tách-các-nút-lá-và-khối-nội-dung)
-   - 5.1 [Nút Lá: Câu văn (`sentence`)](#51-nút-lá-câu-văn-sentence)
-   - 5.2 [Nút Lá: Công thức toán dạng khối (`formula`)](#52-nút-lá-công-thức-toán-dạng-khối-formula)
-   - 5.3 [Nút Lá: Khối Hình ảnh (`figure`) & Bảng biểu (`table`)](#53-nút-lá-khối-hình-ảnh-figure--bảng-biểu-table)
-   - 5.4 [Nút Nhánh: Danh sách liệt kê (`itemize`) & Mục danh sách (`item`)](#54-nút-nhánh-danh-sách-liệt-kê-itemize--mục-danh-sách-item)
-6. [Xử lý các Phần Đặc biệt & Vùng Ngoại lệ](#6-xử-lý-các-phần-đặc-biệt--vùng-ngoại-lệ)
-   - 6.1 [Phần Tài liệu Tham khảo (References) — BẮT BUỘC LOẠI BỎ](#61-phần-tài-liệu-tham-khảo-references--bắt-buộc-loại-bỏ)
-   - 6.2 [Phần Cảm ơn (Acknowledgments) — BẮT BUỘC GIỮ LẠI](#62-phần-cảm-ơn-acknowledgments--bắt-buộc-giữ-lại)
-   - 6.3 [Phần Phụ lục (Appendices) — BẮT BUỘC GIỮ LẠI](#63-phần-phụ-lục-appendices--bắt-buộc-giữ-lại)
-   - 6.4 [Phần Tóm tắt (Abstract) và Preamble](#64-phần-tóm-tắt-abstract-và-preamble)
-   - 6.5 [Comments và Vùng Mã Nguyên văn (Verbatim)](#65-comments-và-vùng-mã-nguyên-văn-verbatim)
-   - 6.6 [Các môi trường bao bọc trong suốt (Transparent Environments)](#66-các-môi-trường-bao-bọc-trong-suốt-transparent-environments)
-7. [Ranh giới Trách nhiệm giữa các Module (Contracts)](#7-ranh-giới-trách-nhiệm-giữa-các-module-contracts)
-8. [Xử lý Lỗi và Phòng thủ (Defensive Parsing)](#8-xử-lý-lỗi-và-phòng-thủ-defensive-parsing)
-9. [Ví dụ Hoàn chỉnh: Đầu vào LaTeX và Đầu ra `hierarchy.json`](#9-ví-dụ-hoàn-chỉnh-đầu-vào-latex-và-đầu-ra-hierarchyjson)
-   - 9.1 [Đoạn mã LaTeX mẫu (`sample_paper.tex`)](#91-đoạn-mã-latex-mẫu-sample_papertex)
+   - 3.5 [Quy ước định danh `element_id` và tính xác định](#35-quy-ước-định-danh-element_id-và-tính-xác-định)
+4. [Chi tiết thuật toán](#4-chi-tiết-thuật-toán)
+   - 4.1 [Tự nhận diện cấp bậc tiêu đề](#41-tự-nhận-diện-cấp-bậc-tiêu-đề)
+   - 4.2 [Dựng quan hệ cha – con bằng ngăn xếp](#42-dựng-quan-hệ-cha--con-bằng-ngăn-xếp)
+   - 4.3 [Chuẩn hóa tiêu đề Section (`title`)](#43-chuẩn-hóa-tiêu-đề)
+5. [Quy tắc bóc tách các nút lá và khối nội dung](#5-quy-tắc-bóc-tách-các-nút-lá-và-khối-nội-dung)
+   - 5.1 [Nút lá: Câu văn (`sentence`)](#51-nút-lá-câu-văn-sentence)
+   - 5.2 [Nút lá: Công thức toán dạng khối (`formula`)](#52-nút-lá-công-thức-toán-dạng-khối-formula)
+   - 5.3 [Nút lá: Khối hình ảnh (`figure`) và bảng biểu (`table`)](#53-nút-lá-khối-hình-ảnh-figure--bảng-biểu-table)
+   - 5.4 [Nút nhánh: Danh sách liệt kê (`itemize`) và mục danh sách (`item`)](#54-nút-nhánh-danh-sách-liệt-kê-itemize--mục-danh-sách-item)
+6. [Xử lý các phần đặc biệt và vùng ngoại lệ](#6-xử-lý-các-phần-đặc-biệt--vùng-ngoại-lệ)
+   - 6.1 [Phần tài liệu tham khảo](#61-phần-tài-liệu-tham-khảo)
+   - 6.2 [Phần cảm ơn](#62-phần-cảm-ơn)
+   - 6.3 [Phần phụ lục](#63-phần-phụ-lục)
+   - 6.4 [Phần tóm tắt và lời mở đầu](#64-phần-tóm-tắt-và-lời-mở-đầu)
+   - 6.5 [Bình luận và các khối mã nguyên bản](#65-bình-luận-và-các-khối-mã-nguyên-bản)
+   - 6.6 [Các môi trường bao bọc trong suốt](#66-các-môi-trường-bao-bọc-trong-suốt)
+7. [Ranh giới trách nhiệm giữa các Module](#7-ranh-giới-trách-nhiệm-giữa-các-module)
+8. [Xử lý lỗi và phòng thủ](#8-xử-lý-lỗi-và-phòng-thủ)
+9. [Ví dụ hoàn chỉnh: đầu vào LaTeX và đầu ra `hierarchy.json`](#9-ví-dụ-hoàn-chỉnh-đầu-vào-latex-và-đầu-ra-hierarchyjson)
+   - 9.1 [Đoạn mã LaTeX mẫu (`sample_paper.tex`)](#91-đoạn-mã-latex-mẫu)
    - 9.2 [File đầu ra cấu trúc cây `hierarchy.json` tương ứng](#92-file-đầu-ra-cấu-trúc-cây-hierarchyjson-tương-ứng)
-   - 9.3 [Ánh xạ sang Hai Bảng Parquet (`elements` & `hierarchy`) trong Bộ Dataset 6 Bảng](#93-ánh-xạ-sang-hai-bảng-parquet-elements--hierarchy-trong-bộ-dataset-6-bảng)
+   - 9.3 [Ánh xạ sang hai bảng Parquet (`elements` & `hierarchy`) trong bộ Dataset 6 bảng](#93-ánh-xạ-sang-hai-bảng-parquet-elements--hierarchy-trong-bộ-dataset-6-bảng)
      - 9.3.1 [Bảng `elements` (Trích đoạn các dòng đại diện)](#931-bảng-elements-trích-đoạn-các-dòng-đại-diện)
      - 9.3.2 [Bảng `hierarchy` (Biểu diễn cây cho version 1)](#932-bảng-hierarchy-biểu-diễn-cây-cho-version-1)
-10. [Khảo sát Thực nghiệm (Empirical Survey Action Items)](#10-khảo-sát-thực-nghiệm-empirical-survey-action-items)
-    - 10.1 [Bảng dữ liệu Khảo sát Thực nghiệm 10 Bài báo](#101-bảng-dữ-liệu-khảo-sát-thực-nghiệm-10-bài-báo)
-    - 10.2 [Kiểm chứng 9 Giả thuyết Kỹ thuật (H1 – H9)](#102-kiểm-chứng-9-giả-thuyết-kỹ-thuật-h1--h9)
-11. [Tài liệu Tham khảo](#11-tài-liệu-tham-khảo)
+10. [Khảo sát thực nghiệm và kiểm chứng giả thuyết](#10-khảo-sát-thực-nghiệm-và-kiểm-chứng-giả-thuyết)
+    - 10.1 [Bảng dữ liệu khảo sát thực nghiệm 10 bài báo](#101-bảng-dữ-liệu-khảo-sát-thực-nghiệm-10-bài-báo)
+    - 10.2 [Kiểm chứng 9 giả thuyết kỹ thuật (H1 – H9)](#102-kiểm-chứng-9-giả-thuyết-kỹ-thuật-h1--h9)
+11. [Tài liệu tham khảo](#11-tài-liệu-tham-khảo)
 
 ---
 
 ## 1. Mục đích và Phạm vi
 
 ### 1.1 Mục đích
-Tài liệu này là **nguồn sự thật duy nhất (Single Source of Truth - SSOT)** quy định thuật toán, cấu trúc dữ liệu và các quy tắc nghiệp vụ để phân tích mã nguồn LaTeX của từng bài báo thành cấu trúc cây phân cấp lưu tại file trung gian `hierarchy.json`, sau đó làm phẳng (flatten) triệt để thành hai bảng Parquet `elements` và `hierarchy` để phát hành trên Hugging Face.
+Tài liệu này là **nguồn sự thật duy nhất (Single Source of Truth - SSOT)** quy định thuật toán, cấu trúc dữ liệu và các quy tắc nghiệp vụ để phân tích mã nguồn LaTeX của từng bài báo thành cấu trúc cây phân cấp lưu tại file trung gian `hierarchy.json`, sau đó làm phẳng triệt để thành hai bảng Parquet `elements` và `hierarchy` để phát hành trên Hugging Face.
 
 ### 1.2 Vị trí trong Pipeline xử lý
 Quy trình phân tích văn bản của Milestone 2 diễn ra tuần tự:
@@ -77,7 +77,7 @@ Quy trình phân tích văn bản của Milestone 2 diễn ra tuần tự:
 │ 3. Tree Builder           │   │ 4. BibTeX Extractor      │
 │    (tree_builder.py)      │   │    (bibtex_extractor.py) │
 │    • Nhận diện heading    │   │    • Trích xuất \bibitem │
-│    • Bóc tách Lá & Cành   │   │    • Chuẩn hóa trường    │
+│    • Bóc tách lá và cành  │   │    • Chuẩn hóa trường    │
 │    • LOẠI BỎ References   │   │    • Xuất refs.bib       │
 │    • GIỮ Ack & Appendices │   └─────────────┬────────────┘
 │    • Xuất hierarchy.json  │                 │
@@ -102,10 +102,10 @@ Quy trình phân tích văn bản của Milestone 2 diễn ra tuần tự:
 └────────────────────────────────────────────────────────┘
 ```
 
-### 1.3 Phạm vi và Ranh giới
+### 1.3 Phạm vi và ranh giới
 - **Trong phạm vi:**
-  - Định nghĩa thuật toán tự động nhận diện cấp bậc tiêu đề (Dynamic Heading Hierarchy).
-  - Định nghĩa các loại nút (Nodes) trong cây và thuộc tính tương ứng.
+  - Định nghĩa thuật toán tự động nhận diện cấp bậc tiêu đề.
+  - Định nghĩa các loại nút trong cây và thuộc tính tương ứng.
   - Định nghĩa quy tắc bóc tách câu văn (`sentence`), công thức khối (`formula`), hình ảnh (`figure`), bảng biểu (`table`), danh sách liệt kê (`itemize`).
   - Định nghĩa quy tắc xử lý các phần đặc biệt (References, Acknowledgments, Appendices).
   - Quy định định dạng ID, cấu trúc file trung gian `hierarchy.json` và cơ chế làm phẳng triệt để sang 2 bảng Parquet phẳng (`elements` & `hierarchy`) tuân thủ chuẩn 6 bảng sharded Parquet (flat & primitive columns, tuyệt đối không lồng đối tượng hay dùng serialized JSON blob).
@@ -115,41 +115,41 @@ Quy trình phân tích văn bản của Milestone 2 diễn ra tuần tự:
 
 ---
 
-## 2. Các Nguyên tắc Bất biến Cốt lõi (Core Invariants)
+## 2. Các nguyên tắc bất biến cốt lõi
 
 Bộ phân tích bắt buộc phải thỏa mãn 6 nguyên tắc bất biến:
 
-1. **Cấp bậc tiêu đề được tự nhận diện (Dynamic Heading Hierarchy):**
+1. **Cấp bậc tiêu đề được tự nhận diện:**
    Không được hard-code cứng cấp độ (ví dụ không mặc định `\section` luôn là level 1). Hệ thống phải tự động quét toàn bài báo, xác định tập các lệnh heading có mặt và gán level liên tục từ trên xuống dưới.
-2. **Nút lá (Leaves) của cây gồm 4 loại duy nhất:**
+2. **Nút lá của cây gồm 4 loại duy nhất:**
    - Câu văn (`sentence`).
    - Công thức toán dạng khối (`formula`: `$$...$$`, `equation`, `align`, ...).
    - Khối hình ảnh (`figure`).
    - Khối bảng biểu (`table`).
    Nút lá là các đơn vị chứa nội dung văn bản cuối cùng, không có nút con (`children = []`).
-3. **Danh sách `itemize` là nhánh con (Container Branch):**
+3. **Danh sách `itemize` là nhánh con:**
    Môi trường danh sách không phải là nút lá. Môi trường `itemize` là nút nhánh cấp 1, mỗi `\item` là một nút con cấp 2, và bên trong `\item` chứa các nút lá (câu, công thức, hình, bảng) hoặc danh sách con lồng nhau.
 4. **Quy tắc phân loại các phần đặc biệt:**
    - **BỎ** phần tài liệu tham khảo (*References*, *Bibliography*, *thebibliography*) khỏi cây nội dung `hierarchy.json`.
    - **GIỮ** phần cảm ơn (*Acknowledgments*) và các phụ lục (*Appendices*), phân tích nội dung bên trong như các section bình thường nhưng đánh dấu metadata vai trò.
 5. **Thuộc tính `kind` chuẩn hóa và ID toàn cục:**
    Mỗi element trong cây phải có thuộc tính `kind` tuân thủ nghiêm ngặt enum `Kind` trong `src/schemas.py`, và có mã định danh `element_id` chứa `arxiv_id`.
-6. **Chuẩn hóa lưu trữ Parquet phẳng (Flat & Primitive Storage Invariant):**
+6. **Chuẩn hóa lưu trữ Parquet phẳng:**
    Khi xuất dữ liệu cây sang Parquet để phát hành trong bộ dataset 6 bảng trên Hugging Face (chuẩn sharded Parquet phục vụ Dataset Viewer và Streaming backend):
    - Mọi cột phải là kiểu nguyên thủy (primitive: `string`, `int`, `float`, `bool`) hoặc danh sách chuỗi một cấp (one-level string list).
-   - **Tuyệt đối không lưu trữ các đối tượng lồng nhau (nested objects) hay chuỗi JSON serialize (serialized JSON blobs)** trong bất kỳ cột Parquet nào. Toàn bộ cây phân cấp được phân rã phẳng hoàn toàn vào 2 bảng `elements` và `hierarchy` (mô hình Adjacency List).
+   - **Tuyệt đối không lưu trữ các đối tượng lồng nhau hay chuỗi JSON serialize** trong bất kỳ cột Parquet nào. Toàn bộ cây phân cấp được phân rã phẳng hoàn toàn vào 2 bảng `elements` và `hierarchy` (mô hình Adjacency List).
 
 ---
 
-## 3. Mô hình Dữ liệu: Cây lồng nhau & Bảng Parquet
+## 3. Mô hình dữ liệu: cây lồng nhau và bảng Parquet
 
-### 3.1 Quy chuẩn Định dạng Lưu trữ (Storage Format Specification)
+### 3.1 Quy chuẩn định dạng lưu trữ
 
 Để đáp ứng tối đa hiệu năng của Hugging Face Dataset Viewer và Apache Arrow streaming backend, toàn bộ dữ liệu cấu trúc bài báo được phân định rõ ràng giữa hai biểu diễn:
-- **Biểu diễn Cây Cục bộ (`hierarchy.json`):** Chỉ lưu hành nội bộ ở bước xử lý Milestone 2 (in-memory hoặc file tạm trên đĩa). Cây có cấu trúc JSON lồng nhau phân cấp (Nested Tree) phục vụ việc đọc hiểu cấu trúc phân tầng tự nhiên, hỗ trợ thuật toán bóc tách phạm vi heading, nhận diện cha-con và phân tích ngữ cảnh (context-aware processing).
-- **Biểu diễn Bảng Phẳng Parquet (`elements` & `hierarchy`):** Khi đóng gói xuất bản, cây phân cấp **bắt buộc phải được làm phẳng hoàn toàn** thành hai bảng quan hệ theo mô hình Adjacency List chuẩn Apache Parquet, tuyệt đối không serialize cả cây hay các node thành JSON blob.
+- **Biểu diễn cây cục bộ (`hierarchy.json`):** Chỉ lưu hành nội bộ ở bước xử lý Milestone 2 (in-memory hoặc file tạm trên đĩa). Cây có cấu trúc JSON lồng nhau phân cấp phục vụ việc đọc hiểu cấu trúc phân tầng tự nhiên, hỗ trợ thuật toán bóc tách phạm vi heading, nhận diện cha - con và phân tích ngữ cảnh.
+- **Biểu diễn bảng phẳng Parquet (`elements` & `hierarchy`):** Khi đóng gói xuất bản, cây phân cấp **bắt buộc phải được làm phẳng hoàn toàn** thành hai bảng quan hệ theo mô hình Adjacency List chuẩn Apache Parquet, tuyệt đối không serialize cả cây hay các node thành JSON blob.
 
-### 3.2 Cấu trúc Dataset Repository & Hệ thống 6 Bảng Parquet
+### 3.2 Cấu trúc Dataset Repository và hệ thống 6 bảng Parquet
 
 Cấu trúc thư mục của repository bộ dữ liệu trên Hugging Face (`<dataset-repo>`) được định dạng chuẩn hóa như sau:
 
@@ -165,17 +165,6 @@ Cấu trúc thư mục của repository bộ dữ liệu trên Hugging Face (`<d
         └── predictions/
 ```
 
-Milestones 1 and 2 already specified five of these tables beside the data they produce, and the predictions table below completes the set:
-
-| Table | Content | Described in |
-|---|---|---|
-| `papers` | the crawled paper metadata | Milestone 1 |
-| `references` | the crawled reference metadata with one row per crawled reference and its citing paper, keeping the arXiv-keyed references only | Milestone 1 |
-| `elements` | the parsed elements of all versions, deduplicated into one store | Milestone 2 |
-| `hierarchy` | the per-version node-parent edges between elements | Milestone 2 |
-| `bibtex` | the unified BibTeX entries after deduplication | Milestone 2 |
-| `predictions` | the matching results with columns given below | this milestone |
-
 Chi tiết nội dung và schema kỹ thuật của 6 bảng Parquet (tuân thủ nghiêm ngặt nguyên tắc **Flat & Primitive**):
 
 1. **`papers`** (`data/papers/`):
@@ -186,11 +175,11 @@ Chi tiết nội dung và schema kỹ thuật của 6 bảng Parquet (tuân th�
    - Metadata trích dẫn thu thập được, mỗi dòng tương ứng một reference được trích dẫn và bài báo trích dẫn nó, chỉ giữ lại các reference có khóa arXiv (`arxiv-keyed references`).
    - *Schema:* `arxiv_id: string` (bài báo trích dẫn), `cited_arxiv_id: string` (bài báo arXiv được trích dẫn).
 3. **`elements`** (`data/elements/`):
-   - Các phần tử văn bản nội dung đã bóc tách từ mọi phiên bản của bài báo, được khử trùng lặp (deduplicated) vào một kho duy nhất.
+   - Các phần tử văn bản nội dung đã bóc tách từ mọi phiên bản của bài báo, được khử trùng lặp vào một kho duy nhất.
    - *Schema:* `element_id: string`, `arxiv_id: string`, `kind: string`, `content: string`, `level: int32 (nullable)`.
    - *Quy tắc:* Toàn bộ cột là primitive scalars (`string`, `int32`), **tuyệt đối không chứa nested objects hay serialized JSON blobs** (không gói dict thành chuỗi JSON trong `content`).
 4. **`hierarchy`** (`data/hierarchy/`):
-   - Các cạnh quan hệ nút con - nút cha (per-version node-parent edges) giữa các phần tử theo từng phiên bản.
+   - Các cạnh quan hệ nút con - nút cha giữa các phần tử theo từng phiên bản.
    - *Schema:* `arxiv_id: string`, `version: int32`, `element_id: string`, `parent_id: string (nullable)`, `order: int32`.
    - *Quy tắc:* Mô hình Adjacency List chuẩn hóa; liên kết nút con với nút cha qua khóa ngoại `parent_id`, bảo toàn thứ tự bằng `order`. Toàn bộ kiểu dữ liệu là primitive.
 5. **`bibtex`** (`data/bibtex/`):
@@ -201,35 +190,35 @@ Chi tiết nội dung và schema kỹ thuật của 6 bảng Parquet (tuân th�
    - Kết quả so khớp (matching results) từ mô hình Machine Learning ở Milestone 3 hoàn thiện bộ 6 bảng.
    - *Schema (9 cột):* `arxiv_id: string`, `partition: string` (`train`/`valid`/`test`), `citation_key: string`, `groundtruth_arxiv_id: string (nullable)`, `cand_1: string (nullable)`, `cand_2: string (nullable)`, `cand_3: string (nullable)`, `cand_4: string (nullable)`, `cand_5: string (nullable)`.
 
-### 3.3 Nguyên tắc Cột phẳng và Kiểu nguyên thủy (Flat & Primitive Rules)
+### 3.3 Nguyên tắc cột phẳng và kiểu nguyên thủy
 1. **Tại sao không dùng Nested Objects hoặc Serialized JSON Blobs?**
    - Hugging Face Dataset Viewer và Streaming backend đọc Parquet trực tiếp theo từng khối dữ liệu nhị phân (Row Groups / Shards).
-   - Việc lồng object phức tạp hoặc serialize JSON blobs (`"{\"caption\": \"...\", \"label\": \"...\"}"`) sẽ phá vỡ cơ chế suy diễn kiểu (type inference), vô hiệu hóa bộ lọc cột (column projection / predicate pushdown), và ép phía client phải tốn chi phí parse chuỗi JSON.
+   - Việc lồng object phức tạp hoặc serialize JSON blobs (`"{\"caption\": \"...\", \"label\": \"...\"}"`) sẽ phá vỡ cơ chế suy diễn kiểu, vô hiệu hóa bộ lọc cột, và ép phía client phải tốn chi phí parse chuỗi JSON.
 2. **Quy định kiểu dữ liệu:**
-   - Cột nguyên thủy (Primitive): `string`, `int32`, `int64`, `float64`, `bool`.
+   - Cột nguyên thủy: `string`, `int32`, `int64`, `float64`, `bool`.
    - Danh sách một cấp (One-level List): Chỉ chấp nhận danh sách chuỗi đơn giản (`list[str]`) cho các trường danh sách như `authors` và `revised_dates`.
    - Mọi trường thông tin khác của phần tử (như `title`, `content`, `caption`, `label`) phải được lưu trữ dưới dạng chuỗi thuần hoặc tách thành cột primitive riêng biệt, **tuyệt đối không gom nhóm thành dictionary lồng nhau**.
 
 ### 3.4 Tập giá trị chuẩn cho thuộc tính `kind`
 Đồng bộ trực tiếp với `Kind` enum trong `src/schemas.py`:
 
-| `kind` | Vai trò trong cây | Là Lá (Leaf)? | Mô tả |
+| `kind` | Vai trò trong cây | Là lá? | Mô tả |
 |---|---|:---:|---|
-| `document` | Gốc (Root) | ❌ | Node gốc đại diện cho toàn bộ một phiên bản bài báo (1 node/bài). |
-| `section` | Nhánh (Branch) | ❌ | Đại diện cho các cấp phân chia tiêu đề (`\part`, `\chapter`, `\section`, `\subsection`, `\subsubsection`). |
-| `paragraph` | Nhánh (Branch) | ❌ | Đại diện cho khối đoạn văn có tiêu đề chạy liền (`\paragraph`, `\subparagraph`). |
-| `itemize` | Nhánh (Branch) | ❌ | Container đại diện cho môi trường danh sách (`itemize`, `enumerate`, `description`). |
-| `item` | Nhánh (Branch) | ❌ | Đại diện cho một mục con (`\item`) bên trong một container danh sách. |
-| `sentence` | **Lá (Leaf)** | ✅ | Một câu văn hoàn chỉnh đã qua tách câu và bảo vệ thực thể. |
-| `formula` | **Lá (Leaf)** | ✅ | Một công thức toán dạng khối (Display Math). |
-| `figure` | **Lá (Leaf)** | ✅ | Toàn bộ khối hình ảnh (`figure`, `figure*`). |
-| `table` | **Lá (Leaf)** | ✅ | Toàn bộ khối bảng biểu (`table`, `table*`). |
+| `document` | Gốc | ❌ | Node gốc đại diện cho toàn bộ một phiên bản bài báo (1 node/bài). |
+| `section` | Nhánh | ❌ | Đại diện cho các cấp phân chia tiêu đề (`\part`, `\chapter`, `\section`, `\subsection`, `\subsubsection`). |
+| `paragraph` | Nhánh | ❌ | Đại diện cho khối đoạn văn có tiêu đề chạy liền (`\paragraph`, `\subparagraph`). |
+| `itemize` | Nhánh | ❌ | Container đại diện cho môi trường danh sách (`itemize`, `enumerate`, `description`). |
+| `item` | Nhánh | ❌ | Đại diện cho một mục con (`\item`) bên trong một container danh sách. |
+| `sentence` | **Lá** | ✅ | Một câu văn hoàn chỉnh đã qua tách câu và bảo vệ thực thể. |
+| `formula` | **Lá** | ✅ | Một công thức toán dạng khối (Display Math). |
+| `figure` | **Lá** | ✅ | Toàn bộ khối hình ảnh (`figure`, `figure*`). |
+| `table` | **Lá** | ✅ | Toàn bộ khối bảng biểu (`table`, `table*`). |
 
-### 3.5 Quy ước định danh `element_id` và tính Xác định (Deterministic ID)
+### 3.5 Quy ước định danh `element_id` và tính xác định
 Quy chuẩn định danh `element_id` phải đảm bảo 3 yêu cầu:
 1. Bắt buộc chứa `arxiv_id`.
 2. Không bị trùng lặp trong toàn bộ 25.000 bài báo.
-3. Có tính xác định tuyệt đối (Deterministic): Cùng một chuỗi mã nguồn đầu vào luôn sinh ra tập `element_id` giống nhau qua mọi lần chạy.
+3. Có tính xác định tuyệt đối: Cùng một chuỗi mã nguồn đầu vào luôn sinh ra tập `element_id` giống nhau qua mọi lần chạy.
 
 **Quy tắc sinh ID:**
 Dùng hàm sinh ID chuẩn hóa:
@@ -257,12 +246,12 @@ Trong đó `local_id` được sinh theo thứ tự duyệt tiền thứ tự (P
 
 ---
 
-## 4. Thuật toán & Quy tắc Bóc tách Chi tiết
+## 4. Chi tiết thuật toán
 
-### 4.1 Tự nhận diện Cấp bậc Tiêu đề (Dynamic Heading Hierarchy)
-LaTeX chuẩn quy định thứ bậc tự nhiên (Rank) gồm 7 cấp độ:
+### 4.1 Tự nhận diện cấp bậc tiêu đề
+LaTeX chuẩn quy định thứ bậc tự nhiên gồm 7 cấp độ:
 
-| Cấp LaTeX chuẩn | Lệnh tương ứng | Hạng chuẩn (Rank) |
+| Cấp LaTeX chuẩn | Lệnh tương ứng | Hạng chuẩn |
 |---|---|:---:|
 | Part | `\part{...}` | 0 |
 | Chapter | `\chapter{...}` | 1 |
@@ -288,8 +277,8 @@ $$\text{Level}(\text{cmd}) = \text{Index trong danh sách các lệnh có mặt}
 - Bài báo loại 3 (Tác giả bỏ qua `\subsection`, nhảy từ `\section` sang `\subsubsection`):
   $\rightarrow$ `\section` có level 1; `\subsubsection` có level 2. (Không sinh node rỗng trung gian).
 
-### 4.2 Dựng quan hệ Cha – Con bằng Ngăn xếp (Stack-based Construction)
-Sử dụng cấu trúc dữ liệu Ngăn xếp (Stack) để quản lý phạm vi của các section đang mở:
+### 4.2 Dựng quan hệ cha – con bằng ngăn xếp
+Sử dụng cấu trúc dữ liệu ngăn xếp để quản lý phạm vi của các section đang mở:
 
 ```python
 # Thuật toán dựng cây:
@@ -315,7 +304,7 @@ for item in parsed_items:
 **Xử lý văn bản trước Heading đầu tiên:**
 Mọi nội dung xuất hiện sau `\begin{document}` (hoặc sau `abstract`) nhưng nằm trước lệnh heading đầu tiên sẽ được gắn trực tiếp vào nút gốc `document`.
 
-### 4.3 Chuẩn hóa Tiêu đề Section (`title`)
+### 4.3 Chuẩn hóa tiêu đề Section (`title`)
 Tiêu đề của section được trích xuất từ đối số thứ nhất của lệnh heading và làm sạch:
 1. Loại bỏ nhãn tham chiếu `\label{...}` lồng bên trong tiêu đề (lưu riêng nếu cần).
 2. Xử lý macro tương thích `\texorpdfstring{TeX text}{Plain text}`: Luôn lấy tham số thứ hai (`Plain text`) để đảm bảo tiêu đề sạch ký tự lạ.
@@ -324,13 +313,13 @@ Tiêu đề của section được trích xuất từ đối số thứ nhất c
 
 ---
 
-## 5. Quy tắc Bóc tách các Nút Lá và Khối Nội dung
+## 5. Quy tắc bóc tách các nút lá và khối nội dung
 
-### 5.1 Nút Lá: Câu văn (`sentence`)
+### 5.1 Nút lá: Câu văn (`sentence`)
 Nhiệm vụ của bộ tách câu là chia một đoạn văn bản thành danh sách các node `kind = "sentence"`. Việc tách câu phải thông minh, không được gây phân mảnh sai các thực thể toán học và trích dẫn.
 
 **Quy trình 3 bước tách câu:**
-1. **Bước 1 — Bảo vệ các thực thể không thể tách (Masking/Escaping):**
+1. **Bước 1 — Bảo vệ các thực thể không thể tách:**
    Thay thế tạm thời bằng các token đặc biệt hoặc bảo vệ các thành phần:
    - Toán nội dòng: `$...$` và `\( ... \)`.
    - Trích dẫn thư mục: `\cite{...}`, `\citep{...}`, `\citet{...}`.
@@ -339,7 +328,7 @@ Nhiệm vụ của bộ tách câu là chia một đoạn văn bản thành danh
    - Các chữ viết tắt phổ biến trong văn bản khoa học: `et al.`, `i.e.`, `e.g.`, `cf.`, `vs.`, `Fig.`, `Eq.`, `Sec.`, `Ref.`, `Thm.`, `Lem.`, `No.`, `Vol.`, `pp.`, `etc.`.
    - Viết tắt tên tác giả: `A. Smith`, `J. D. Watson`.
    - Số thập phân: `3.14159`, `.05`, `1,000`.
-2. **Bước 2 — Phân tách ranh giới câu (Sentence Boundary Detection):**
+2. **Bước 2 — Phân tách ranh giới câu:**
    - Chỉ tách câu tại dấu chấm kết thúc (`.`), dấu chấm hỏi (`?`), dấu chấm than (`!`) khi theo sau bởi khoảng trắng và một ký tự viết hoa hoặc bắt đầu một đoạn mới.
    - Hai dấu xuống dòng liên tiếp (`\n\n`) hoặc lệnh `\par` báo hiệu ngắt đoạn: Ngắt câu ngay tại ranh giới đoạn văn dù câu trước có thiếu dấu chấm.
 3. **Bước 3 — Khôi phục thực thể và Chuẩn hóa:**
@@ -347,7 +336,7 @@ Nhiệm vụ của bộ tách câu là chia một đoạn văn bản thành danh
    - Chuẩn hóa khoảng trắng dư thừa (`\s+` $\rightarrow$ `" "`).
    - Giữ nguyên các lệnh trích dẫn `\cite{...}` trong trường `content` của câu. Đây là thông tin cực kỳ quan trọng cho Module M3 (Reference Matching).
 
-### 5.2 Nút Lá: Công thức toán dạng khối (`formula`)
+### 5.2 Nút lá: Công thức toán dạng khối (`formula`)
 Mọi công thức hiển thị riêng biệt trên một dòng (Display Math) được đóng gói thành một node `kind = "formula"`.
 
 **Các môi trường bắt buộc nhận diện:**
@@ -371,7 +360,7 @@ Khi công thức khối xuất hiện giữa câu, parser chia thành chuỗi 3 
 [sentence: "trong đó \mu là hệ số tĩnh."]
 ```
 
-### 5.3 Nút Lá: Khối Hình ảnh (`figure`) & Bảng biểu (`table`)
+### 5.3 Nút lá: Khối hình ảnh (`figure`) và bảng biểu (`table`)
 Toàn bộ khối môi trường trôi (Float Environment) được xem là một nút lá độc lập.
 
 **Các môi trường hỗ trợ:**
@@ -387,7 +376,7 @@ Toàn bộ khối môi trường trôi (Float Environment) được xem là mộ
 - **Tuân thủ nguyên tắc Flat & Primitive khi lưu Parquet:**
   Trong file trung gian `hierarchy.json`, các trường `caption`, `label` có thể được tổ chức thành các key riêng của node để phục vụ bước bóc tách. Tuy nhiên, khi làm phẳng vào bảng Parquet `elements`, trường `content` lưu trữ chuỗi văn bản thuần (ví dụ: nội dung caption hoặc đoạn mã TeX thô đã làm sạch), **tuyệt đối không serialize thành JSON string (như `{"caption": "...", "label": "..."}`)** để tuân thủ quy chuẩn không dùng JSON blobs.
 
-### 5.4 Nút Nhánh: Danh sách liệt kê (`itemize`) & Mục danh sách (`item`)
+### 5.4 Nút nhánh: Danh sách liệt kê (`itemize`) và mục danh sách (`item`)
 Cấu trúc danh sách biểu diễn theo mô hình 2 tầng lồng nhau:
 
 ```text
@@ -409,12 +398,12 @@ Node "itemize" (Container)
 
 ---
 
-## 6. Xử lý các Phần Đặc biệt & Vùng Ngoại lệ
+## 6. Xử lý các phần đặc biệt và vùng ngoại lệ
 
-### 6.1 Phần Tài liệu Tham khảo (References) — BẮT BUỘC LOẠI BỎ
+### 6.1 Phần tài liệu tham khảo
 Yêu cầu bắt buộc của bài toán: Cây phân cấp nội dung `hierarchy.json` **không được chứa** các mục tham khảo thư mục.
 
-**Nhận diện và Cắt bỏ:**
+**Nhận diện và cắt bỏ:**
 1. Khối môi trường tường minh:
    - `\begin{thebibliography}{...} ... \end{thebibliography}`
    - `\bibliography{...}`, `\printbibliography`
@@ -427,7 +416,7 @@ Yêu cầu bắt buộc của bài toán: Cây phân cấp nội dung `hierarchy
 > **Thứ tự xử lý giữa P2-04 và P2-03:**
 > Module `bibtex_extractor.py` (P2-04) phải trích xuất các `\bibitem` thành file `refs.bib` từ chuỗi LaTeX **trước** khi `tree_builder.py` (P2-03) loại bỏ phần này khỏi cây phân cấp!
 
-### 6.2 Phần Cảm ơn (Acknowledgments) — BẮT BUỘC GIỮ LẠI
+### 6.2 Phần cảm ơn
 Phần cảm ơn phải được bảo toàn trong cây nội dung.
 - Các tiêu đề thường gặp: `Acknowledgment`, `Acknowledgments`, `Acknowledgement`, `Acknowledgements`.
 - Các môi trường đặc thù của một số journal: `\begin{acknowledgments} ... \end{acknowledgments}` (như gói `revtex4`).
@@ -437,14 +426,14 @@ Phần cảm ơn phải được bảo toàn trong cây nội dung.
   - Phân tích các câu văn bên trong như một Section bình thường.
   - Thêm cờ đánh dấu metadata `role = "acknowledgments"` để phục vụ cho các tác vụ downstream.
 
-### 6.3 Phần Phụ lục (Appendices) — BẮT BUỘC GIỮ LẠI
+### 6.3 Phần phụ lục
 Mọi nội dung trong phần phụ lục phải được giữ trọn vẹn trong cây phân cấp.
 - Chỉ thị phân định: Lệnh `\appendix` hoặc môi trường `\begin{appendices} ... \end{appendices}`.
 - Lệnh `\appendix` trong LaTeX là một công tắc chuyển chế độ đánh số (từ 1, 2, 3 sang A, B, C), bản thân lệnh này không nhất thiết phải là một heading.
 - Khi gặp `\appendix`, toàn bộ các section xuất hiện phía sau lệnh này đều được đánh dấu metadata `role = "appendix"`.
 - Nếu phụ lục xuất hiện sau phần References, hệ thống vẫn tiếp tục mở lại việc dựng cây cho phụ lục, tuyệt đối không được cắt bỏ phụ lục theo References.
 
-### 6.4 Phần Tóm tắt (Abstract) và Preamble
+### 6.4 Phần tóm tắt và lời mở đầu
 - **Preamble:** Toàn bộ phần mã nguồn nằm trước `\begin{document}` (khai báo `\documentclass`, `\usepackage`, macro) bị loại bỏ khỏi cây nội dung (chỉ lưu trữ nội bộ trong mã nguồn gốc thô, không đưa vào cây phân cấp).
 - **Abstract:** Môi trường `\begin{abstract} ... \end{abstract}` được chuẩn hóa thành một Section đặc biệt:
   - `kind = "section"`
@@ -455,7 +444,7 @@ Mọi nội dung trong phần phụ lục phải được giữ trọn vẹn tro
 - **Metadata tác giả:** Các lệnh `\title{...}`, `\author{...}`, `\date{...}` không tạo node trong cây (đã được lưu tại `metadata.json` / bảng `papers`).
 - **Nội dung sau `\end{document}`:** Bỏ qua hoàn toàn.
 
-### 6.5 Comments và Vùng Mã Nguyên văn (Verbatim)
+### 6.5 Bình luận và các khối mã nguyên bản
 1. **Comment:**
    - Ký tự `%` bắt đầu comment đến hết dòng. Mọi lệnh LaTeX nằm sau `%` bị vô hiệu hóa.
    - Ký tự escape `\%` biểu thị dấu phần trăm thông thường, không phải là comment.
@@ -465,14 +454,14 @@ Mọi nội dung trong phần phụ lục phải được giữ trọn vẹn tro
    - Các lệnh rẽ nhánh điều kiện: `\iffalse ... \fi`, `\begin{comment} ... \end{comment}`.
    - Parser xem các vùng này như khối văn bản thô hoặc khối hộp đen, **không** phân tích cú pháp heading hay tách câu bên trong các môi trường này.
 
-### 6.6 Các môi trường bao bọc trong suốt (Transparent Environments)
+### 6.6 Các môi trường bao bọc trong suốt
 Các môi trường định lý và trình bày: `theorem`, `lemma`, `proposition`, `corollary`, `definition`, `remark`, `proof`, `quote`, `center`, `minipage`.
 - Các môi trường này đóng vai trò bao bọc ngữ nghĩa nhưng không làm thay đổi phân cấp cha-con của tài liệu.
 - **Quy tắc:** Bộ phân tích xem các môi trường này là "trong suốt" (transparent wrappers) — nội dung bên trong được bóc tách thành các câu `sentence` hoặc công thức `formula` và gắn trực tiếp vào Section cha hiện tại.
 
 ---
 
-## 7. Ranh giới Trách nhiệm giữa các Module (Contracts)
+## 7. Ranh giới trách nhiệm giữa các Module
 
 | Module | Đầu vào | Đầu ra | Ranh giới Trách nhiệm & Điều cấm |
 |---|---|---|---|
@@ -485,7 +474,7 @@ Các môi trường định lý và trình bày: `theorem`, `lemma`, `propositio
 
 ---
 
-## 8. Xử lý Lỗi và Phòng thủ (Defensive Parsing)
+## 8. Xử lý lỗi và phòng thủ
 
 Để pipeline không bị dừng đột ngột khi xử lý hàng nghìn bài báo thật, bộ dựng cây phải triển khai cơ chế bắt lỗi phòng thủ (Fail-safe):
 
@@ -502,7 +491,7 @@ Các môi trường định lý và trình bày: `theorem`, `lemma`, `propositio
 
 ---
 
-## 9. Ví dụ Hoàn chỉnh: Đầu vào LaTeX và Đầu ra `hierarchy.json`
+## 9. Ví dụ hoàn chỉnh: đầu vào LaTeX và đầu ra `hierarchy.json`
 
 ### 9.1 Đoạn mã LaTeX mẫu (`sample_paper.tex`)
 
@@ -709,7 +698,7 @@ The detailed proof of correctness follows by induction on $|V|$.
 }
 ```
 
-### 9.3 Ánh xạ sang Hai Bảng Parquet (`elements` & `hierarchy`) trong Bộ Dataset 6 Bảng
+### 9.3 Ánh xạ sang hai bảng Parquet (`elements` & `hierarchy`) trong bộ Dataset 6 bảng
 
 Khi export sang 6 bảng Parquet của dataset repo phát hành trên Hugging Face Hub (tuân thủ định dạng sharded Parquet để Dataset Viewer và Streaming backend đọc trực tiếp), cây JSON lồng nhau ở trên được làm phẳng (flatten) triệt để thành hai bảng quan hệ theo mô hình Adjacency List với schema tường minh và thuần kiểu nguyên thủy (Flat & Primitive):
 
@@ -775,7 +764,7 @@ Khi export sang 6 bảng Parquet của dataset repo phát hành trên Hugging Fa
 
 ---
 
-## 10. Khảo sát Thực nghiệm (Empirical Survey Action Items)
+## 10. Khảo sát thực nghiệm và kiểm chứng giả thuyết
 
 Kết quả sau quá trình tiến hành khảo sát trên **10 bài báo arXiv thực tế** tải từ dải ID của bản thân (`2024-11: 3799 → 8798`) và kiểm chứng 9 giả thuyết H1–H9:
 
@@ -817,7 +806,7 @@ Kết quả sau quá trình tiến hành khảo sát trên **10 bài báo arXiv 
 
 ---
 
-## 11. Tài liệu Tham khảo
+## 11. Tài liệu tham khảo
 
 1. *arXiv Bulk Data Access & API Guidelines*: <https://info.arxiv.org/help/bulk_data.html>
 2. *Leslie Lamport*, **LaTeX: A Document Preparation System**, Addison-Wesley, 1994.
