@@ -1,0 +1,15 @@
+{
+  "elements": {
+    "2401.00001#doc": "Mock Paper 2",
+    "2401.00001#sec1": "Method",
+    "2401.00001#s1": "Our method is simple.",
+    "2401.00001#fig1": "\\begin{figure}\\caption{Overview.}\\end{figure}"
+  },
+  "hierarchy": {
+    "1": {
+      "2401.00001#sec1": "2401.00001#doc",
+      "2401.00001#s1": "2401.00001#sec1",
+      "2401.00001#fig1": "2401.00001#sec1"
+    }
+  }
+}

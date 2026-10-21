@@ -21,7 +21,7 @@ Dự án của nhóm làm 3 việc nối tiếp nhau:
 | **M2** | **Parsing** (phân tích cấu trúc) | *Đọc* từng cuốn và lập **mục lục dạng cây**: Chương → Mục → Câu → Công thức | File `hierarchy.json` (cây phân cấp) và `refs.bib` |
 | **M3** | **Reference Matching** (ghép tài liệu tham khảo) | Thấy dòng "Smith et al., 2019, Deep Learning…" và **tìm đúng cuốn sách đó** trong thư viện | Bảng dự đoán top-5 bài khớp nhất cho mỗi tham khảo |
 
-Cuối cùng, toàn bộ dữ liệu được đóng gói thành **7 bảng Parquet** và đăng lên **Hugging Face** để người khác dùng.
+Cuối cùng, toàn bộ dữ liệu được đóng gói thành **6 bảng Parquet** và đăng lên **Hugging Face** để người khác dùng.
 
 ### Bài toán
 
@@ -91,7 +91,7 @@ flowchart TD
         FE --> RM["Ranking Model"]
         RM --> PR["predictions<br/>.parquet<br/>top-5 và MRR"]
     end
-    PR --> HF[("7 bảng Parquet<br/>Hugging Face")]
+    PR --> HF[("6 bảng Parquet<br/>Hugging Face")]
     K --> HF
     I --> HF
 ```
@@ -117,14 +117,14 @@ Có IDD:        M1 ──────────────────►
 1. Discovery: so sánh arXiv API (batch ID), OAI-PMH và Kaggle dataset; chọn phương pháp và đo tổng thời gian.
 2. Tải **mọi version** (v1, v2, …) qua `export.arxiv.org/src/{id}v{n}`.
 3. Nhận diện `.tar.gz` và `.gz` đơn (chứa `.tex`); **xóa ảnh nhưng giữ lệnh `\begin{figure}`**; ghi log `size_before` / `size_after`.
-4. Bài chỉ có PDF/Word → giữ **record rỗng** và ghi log lỗi.
-5. Gọi Semantic Scholar lấy danh sách tham khảo, **bỏ các ref không có arXiv ID**.
+4. Bài chỉ có PDF/Word → giữ **record rỗng** (thư mục version rỗng) và ghi log lỗi.
+5. Gọi Semantic Scholar lấy danh sách tham khảo, lưu trữ cục bộ đầy đủ và chỉ **lọc theo arXiv ID khi xuất bảng `references` Parquet**.
 6. Hỗ trợ CLI độc lập `--id_start --id_end` và **Checkpoint/Resume** (chạy lại sẽ tiếp tục từ chỗ dừng).
 
 **Step 2 – M2: Hierarchical Parsing**
 1. **Multi-file Resolver**: tìm file `.tex` chính, lần theo `\input{}` / `\include{}` để ghép toàn bộ nội dung.
 2. **LaTeX Cleanup & Math Normalization** (xóa `\centering`, `[htpb]`…; chuẩn hóa toán): chạy **TRƯỚC** khi dedup.
-3. **Hierarchy Tree**: dựng cây Chapter → Section → Subsection → … với thuộc tính `kind`.
+3. **Hierarchy Tree**: dựng cây Chapter → Section → Subsection → … với thuộc tính `kind` (`document`, `heading`, `itemize`, `item`, `sentence`, `formula`, `figure`).
 4. **BibTeX Extractor**: trích `\bibitem` thành `refs.bib`, chuẩn hóa trường.
 5. **Dedup 2 cấp**: gộp BibTeX trùng (Field Union) + so khớp nội dung giữa các version.
 
@@ -132,7 +132,7 @@ Có IDD:        M1 ──────────────────►
 1. Gán nhãn (thủ công + tự động) → chia Train / Valid / Test.
 2. Feature Engineering (Levenshtein, Jaccard n-gram, TF-IDF cosine).
 3. Train Ranking Model → xuất top-5 ứng viên → đo **MRR** trên tập Test.
-4. Xuất 7 bảng Parquet → upload Hugging Face.
+4. Xuất 6 bảng Parquet → upload Hugging Face.
 
 ---
 
@@ -155,7 +155,6 @@ Có IDD:        M1 ──────────────────►
 | Benchmark | Google Colab (CPU-only) | Đo hiệu năng chuẩn |
 
 ---
-
 ## 🗂 3. Cấu trúc thư mục
 
 ```
@@ -172,8 +171,9 @@ Intro2DS---ArXiv-Project/
 │
 ├── src/                         # ★ Mã nguồn chính
 │   ├── main.py                  # Pipeline Runner (CLI)                    [P3-01]
-│   ├── schemas.py               # Pydantic schema cho 7 bảng               [P1-02]
+│   ├── schemas.py               # Pydantic schema + schema Parquet 6 bảng  [P1-02]
 │   ├── common/
+│   │   ├── ids.py               # Kiểm tra arXiv ID, đổi ID <-> tên folder [P1-02]
 │   │   └── utils_io.py          # Checkpoint, đọc/ghi JSON, logging
 │   ├── m1_crawling/
 │   │   ├── crawler.py           # Tải source arXiv                         [P2-01]
@@ -190,12 +190,20 @@ Intro2DS---ArXiv-Project/
 │       ├── matching_model.py    # Mô hình ranking                          [P2-06]
 │       ├── train.py             # Huấn luyện + xuất predictions            [P4-01]
 │       ├── evaluate.py          # Tính MRR                                 [P4-01]
-│       └── export_parquet.py    # Xuất 7 bảng + upload HF                  [P4-02]
+│       └── export_parquet.py    # Xuất 6 bảng + upload HF                  [P4-02]
 │
-├── tests/                       # Cấu trúc phản chiếu src/
-│   ├── make_mock.py             # Sinh dữ liệu giả                         [P1-02]
-│   ├── mock_data/               # Mock nhỏ (ĐƯỢC commit)
-│   ├── common/  m1_crawling/  m2_parsing/  m3_matching/
+├── tests/                       # Script sinh mock, mock data và unit test
+│   ├── make_mock.py             # Sinh mock data (dạng làm việc + Parquet) [P1-02]
+│   ├── fetch_real_samples.py    # Tải 2-3 bài thật mẫu từ arXiv            [P1-02]
+│   ├── mock_data/               # Mock nhỏ sinh bởi make_mock.py (ĐƯỢC commit)
+│   │   ├── <yymm-id>/           # Mỗi bài một folder: v1/, v2/, metadata.json,
+│   │   │                        #   references.json, hierarchy.json, refs.bib
+│   │   ├── parquet/             # 6 bảng Parquet: parquet/<table>/part-000.parquet
+│   │   └── real/                # Bài thật do fetch_real_samples.py tải (KHÔNG commit)
+│   ├── common/                  # Chứa các file unit test (test_schemas, test_utils_io, test_make_mock...)
+│   ├── m1_crawling/             # Unit test cho module M1
+│   ├── m2_parsing/              # Unit test cho module M2
+│   └── m3_matching/             # Unit test cho module M3
 │
 ├── docs/                        # Tài liệu thiết kế (spec)
 │   ├── discovery_report.md      # So sánh phương pháp discovery            [P1-00]
@@ -310,7 +318,7 @@ Tuần  12/10 ─ 15/10 : Giai đoạn 1 – Khảo sát, Repo, Schema, Spec
 | P4-03a | Báo cáo Jupyter Book M1 & README update | Kiên & Bảo | Nhi, Kiệt | 30/10 – 02/11 | P3-02b |
 | P4-03b | Báo cáo Jupyter Book M2 | Nhi & Khang | Kiên, Bảo | 08/11 – 12/11 | P3-03b |
 | P4-01 | Huấn luyện model & đo MRR Top-5 | Kiệt | Bảo, Khang | 08/11 – 14/11 | P2-06, P3-07, P3-03a |
-| P4-02 | Xuất 7 bảng Parquet & upload Hugging Face | Bảo | Kiệt, Khang | 15/11 – 18/11 | P3-03a, P4-01 |
+| P4-02 | Xuất 6 bảng Parquet & upload Hugging Face | Bảo | Kiệt, Khang | 15/11 – 18/11 | P3-03a, P4-01 |
 | P4-04 | Thiết kế Poster A2 & Documentation | Kiên & Kiệt | Bảo, Khang | 15/11 – 20/11 | P4-01, P4-03b |
 | P4-05 | Benchmark cuối & nộp Moodle | Cả 5 | Kiên, Nhi | 20/11 – 22/11 | P4-01..04 |
 
@@ -716,13 +724,12 @@ time.sleep(3)  # BẮT BUỘC ≥ 3 giây
 | **URL** | `https://api.semanticscholar.org/graph/v1/paper/arXiv:{id}/references` |
 | **Xác thực** | Header `x-api-key: <S2_API_KEY>` |
 | **Giới hạn** | Delay **1 giây** giữa các request; gặp lỗi **HTTP 429** thì chờ rồi thử lại |
-| **Lọc** | **Bỏ** các tham khảo không có arXiv ID |
+| **Lọc** | Lưu trữ toàn bộ tham khảo cục bộ; lọc theo arXiv ID khi xuất bảng Parquet `references` |
 
 ```python
 url = "https://api.semanticscholar.org/graph/v1/paper/arXiv:2506.00788/references"
 params = {"fields": "title,externalIds", "limit": 1000}
 resp = requests.get(url, params=params, headers={"x-api-key": S2_API_KEY})
-# Giữ lại ref có externalIds["ArXiv"]
 ```
 
 > 📎 Kiểm tra lại tên field và giới hạn tại tài liệu chính thức của S2 trước khi code, vì API có thể thay đổi.
@@ -739,7 +746,7 @@ Kết quả so sánh, lý do chọn và thời gian đo được ghi trong `docs
 
 #### Hugging Face Hub
 
-Dùng `huggingface_hub` để upload 7 bảng Parquet và Dataset Card. Cần `HF_TOKEN`. Hướng dẫn hosting chính thức xin từ Lab Instructors (task P4-02).
+Dùng `huggingface_hub` để upload 6 bảng Parquet và Dataset Card. Cần `HF_TOKEN`. Hướng dẫn hosting chính thức xin từ Lab Instructors (task P4-02).
 
 ### 7.2 Giao diện nội bộ (module)
 
@@ -757,7 +764,7 @@ Dùng `huggingface_hub` để upload 7 bảng Parquet và Dataset Card. Cần `H
 | `m3_matching.features` | `preprocess`, `build_features` | Làm sạch & tạo đặc trưng |
 | `m3_matching.matching_model` | `MatchingModel.fit / .rank` | Huấn luyện & xếp hạng |
 | `m3_matching.evaluate` | `mrr(ranked, truth)` | Tính MRR |
-| `m3_matching.export_parquet` | `export_all(processed_dir, out_dir)` | Xuất 7 bảng |
+| `m3_matching.export_parquet` | `export_all(processed_dir, out_dir)` | Xuất 6 bảng |
 
 > 🚧 Phần lớn hàm đang là **khung (stub)**, mỗi owner hiện thực theo task của mình. Chữ ký hàm có thể điều chỉnh khi code, nhưng **schema trong `src/schemas.py` phải ổn định** (xem IDD).
 
@@ -942,7 +949,7 @@ def test_mrr():
 | Nhãn `ground_truth.json` (`data/labels/`) | Google Drive chung / HF Private | ❌ **Không** |
 | `summary_stats.json` (nhẹ) | `book-repo/` (repo riêng) | ✅ Có (ở repo Book) |
 
-**Giữ lại file `.tex`/`.bib` gốc** sau khi parse để tạo bảng `sources` trên Hugging Face.
+**Giữ lại file `.tex`/`.bib` gốc** trong thư mục làm việc/Drive để lưu trữ và truy vấn local khi cần.
 
 **Báo cáo Jupyter Book** build trên GitHub Actions: pipeline xuất `summary_stats.json` (M1) và `summary_stats_m2.json` (M2) → commit vào `book-repo/` → Notebook đọc & vẽ biểu đồ.
 
@@ -953,10 +960,10 @@ def test_mrr():
 ### 13.1 Cây phân cấp `hierarchy.json` (M2)
 
 - Cấp bậc tiêu đề được **tự nhận diện** (Chapter → Section → Subsection → …).
-- **Lá của cây** gồm: câu (sentence), công thức khối (`$$...$$` / `equation`), hình/bảng (figure/table).
+- **Lá của cây** gồm: câu (sentence), công thức khối (`$$...$$` / `equation`), hình/bảng (`figure`).
 - Danh sách `itemize` là **nhánh con**.
 - **Bỏ** section *References*; **giữ** *Acknowledgments* và *Appendices*.
-- Mỗi element có thuộc tính `kind` (`section`, `sentence`, `formula`, `figure`, `table`, …) theo chuẩn HF elements và **ID chứa arXiv ID**.
+- Mỗi element có thuộc tính `kind` (`document`, `heading`, `itemize`, `item`, `sentence`, `formula`, `figure`) theo chuẩn HF elements và **ID dạng publication key + anchor** (ví dụ: `2310-12345#root1`, `2310-12345#s1`).
 
 *(Chi tiết đầy đủ ở `docs/latex_spec.md`.)*
 
@@ -973,7 +980,7 @@ def test_mrr():
 
 ### 13.3 Gán nhãn & chia tập (M3)
 
-- **Gán tay:** ≥ 5 bài (≥ 20 cặp), dựa trên parse đợt đầu M2. Mỗi thành viên gán ≥ 1 bài.
+- **Gán tay:** ≥ 5 bài (mỗi bài ≥ 20 BibTeX entry, tổng ≥ 100 entry gán nhãn), dựa trên parse đợt đầu M2. Mỗi thành viên gán ≥ 1 bài.
 - **Gán tự động:** ≥ 10% phần còn lại.
 - **Chia tập:** Test = 1 bài tay + 1 bài tự động; Valid = 1 tay + 1 tự động; Train = phần còn lại. *(Làm nhãn Train/Valid trước để có thể train sớm.)*
 - Spec nhãn chi tiết được tài liệu hóa trong mục dưới (cập nhật bởi Kiệt, P1-05/P4-04).
@@ -1000,9 +1007,9 @@ def test_mrr():
 | `groundtruth_arxiv_id` | arXiv ID đúng (nhãn thật) |
 | `cand_1` … `cand_5` | 5 ứng viên xếp hạng cao nhất |
 
-### 13.6 7 bảng Parquet trên Hugging Face
+### 13.6 6 bảng Parquet trên Hugging Face
 
-`papers` · `elements` · `element_parents` · `bibtex_entries` · `paper_references` · `predictions` · `sources`
+`papers` · `references` · `elements` · `hierarchy` · `bibtex` · `predictions`
 
 Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`README.md` với YAML configs).
 
@@ -1056,7 +1063,7 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 3. **Đóng băng parser** trước khi chạy parse thật 25.000 bài; không sửa logic giữa chừng để kết quả nhất quán.
 4. **Xóa ảnh nhưng giữ `\begin{figure}`:** chỉ bỏ file ảnh (giảm dung lượng), **không** xóa lệnh figure trong `.tex`.
 5. **Bài PDF/Word-only:** không bỏ qua, mà **giữ record rỗng** và ghi log.
-6. **Ref không có arXiv ID** trong `references.json` bị **loại bỏ**.
+6. **Ref không có arXiv ID** được lưu cục bộ trong `references.json`, chỉ lọc lấy các ref có arXiv ID khi xuất bảng `references` Parquet.
 7. **Làm nhãn Train/Valid trước** để có thể huấn luyện sớm, nhãn Test làm sau.
 8. **Xin hướng dẫn hosting HF** từ Lab Instructors **sớm**, đừng để đến ngày 15/11.
 9. **Poster A2 dọc: 420 × 594 mm** (`.pptx`), chừa thời gian in trước khi nộp.
