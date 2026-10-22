@@ -1,0 +1,984 @@
+{
+ "mode": "full",
+ "config": {
+  "mode": "full",
+  "id_start": "2506.00788",
+  "id_end": "2506.05787",
+  "n": 50,
+  "oai_n": 20,
+  "batch": 50,
+  "total_ids": 5000,
+  "repeats": 3,
+  "methods": "api,oai,kaggle",
+  "contact": "<email>",
+  "kaggle_json": "data/raw/arxiv-metadata-oai-snapshot.json",
+  "kaggle_version": null,
+  "kaggle_snapshot_date": null,
+  "hash_kaggle": true,
+  "download_seconds": null,
+  "chunksize": 200000,
+  "ram_limit_mb": 6000,
+  "out": "data/raw/discovery.jsonl",
+  "report": "discovery_full_result.json",
+  "worker": null
+ },
+ "environment": {
+  "run_utc": "2026-10-22 04:53:25",
+  "python": "3.14.0",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "libs": {
+   "pandas": "3.0.2",
+   "sickle": "0.7.0",
+   "psutil": "7.2.2",
+   "requests": "2.33.1",
+   "feedparser": "6.0.14",
+   "kaggle": "2.2.4"
+  },
+  "git_commit": "5c0bc13",
+  "argv": [
+   "--mode",
+   "full",
+   "--id-start",
+   "2506.00788",
+   "--id-end",
+   "2506.05787",
+   "--contact",
+   "<email>",
+   "--kaggle-json",
+   "data/raw/arxiv-metadata-oai-snapshot.json",
+   "--hash-kaggle"
+  ],
+  "delay_s": 3.0,
+  "kaggle_file": {
+   "name": "arxiv-metadata-oai-snapshot.json",
+   "size_bytes": 5610256780,
+   "mtime_utc": "2026-10-14 16:55:21",
+   "dataset_version": null,
+   "snapshot_date": null,
+   "sha256": "9ee5aafa99209d6dbf4cd8c138dc662f290a7b49065d7301d4a0152bc0701c75"
+  }
+ },
+ "timing_s": {
+  "kaggle_scan": 73.32,
+  "api_total": 784.16,
+  "write": 0.05,
+  "total_wall_end_to_end": 857.54,
+  "kaggle_download_given": null,
+  "total_incl_download": null
+ },
+ "ram_mb": {
+  "baseline_mb": 80.4,
+  "peak_after_kaggle_scan_mb": 3264.0,
+  "peak_final_mb": 3264.0,
+  "chunksize": 200000,
+  "limit_mb": 6000
+ },
+ "speed": {
+  "kaggle_read_mb_per_s": 76.5,
+  "kaggle_rows_in_range_per_s": 68.2,
+  "api_ids_per_s": 6.38,
+  "api_mean_request_s": 2.569,
+  "delay_between_requests_s": 3.0
+ },
+ "api_requests": {
+  "expected_batches": 100,
+  "actual_requests": 100,
+  "http_attempts": 101,
+  "seconds_stats": {
+   "mean": 2.5688,
+   "median": 1.353,
+   "std": 5.169789996320993,
+   "min": 0.938,
+   "max": 43.4,
+   "n": 100,
+   "ci95": 1.0132788392789145
+  },
+  "log": [
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.536
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.101
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.343
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.468
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.516
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.162
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.432
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.15
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.238
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.204
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.199
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.237
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.139
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.219
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 3.307
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.14
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.206
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.096
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.684
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.575
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.379
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.118
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.328
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.361
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.285
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.298
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.216
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.549
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.648
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.47
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.657
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.376
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.708
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.21
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.26
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.344
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 17.472
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 43.4
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 22.389
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.285
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.192
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.377
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.429
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 4.652
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.413
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.353
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.58
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.22
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.227
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.264
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.117
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 16.897
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.076
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 2,
+    "entries": 50,
+    "seconds": 7.729
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.077
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.251
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.054
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.178
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.026
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 0.938
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 0.954
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.395
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.492
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.171
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.365
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.242
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.032
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.863
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.575
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.243
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.264
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.789
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.125
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.263
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.704
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.233
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.548
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.244
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.743
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.172
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.155
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.287
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.494
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.131
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.718
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.602
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 3.119
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.627
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.465
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.236
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 3.004
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.206
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.835
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.353
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.217
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.364
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.121
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 2.418
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.139
+   },
+   {
+    "pass": "lan 1",
+    "ids": 50,
+    "attempts": 1,
+    "entries": 50,
+    "seconds": 1.217
+   }
+  ]
+ },
+ "counts": {
+  "ids_in_range": 5000,
+  "in_kaggle": 5000,
+  "in_api": 5000,
+  "written": 5000,
+  "missing_in_kaggle": 0,
+  "missing_in_api": 0
+ },
+ "check": {
+  "n_versions_mismatch_api_vs_kaggle": [
+   {
+    "id": "2506.00948",
+    "api": 3,
+    "kaggle": 2
+   },
+   {
+    "id": "2506.01228",
+    "api": 5,
+    "kaggle": 4
+   },
+   {
+    "id": "2506.01448",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.01495",
+    "api": 6,
+    "kaggle": 5
+   },
+   {
+    "id": "2506.01518",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.01540",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.01589",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.02434",
+    "api": 7,
+    "kaggle": 6
+   },
+   {
+    "id": "2506.02514",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.02620",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.02841",
+    "api": 5,
+    "kaggle": 4
+   },
+   {
+    "id": "2506.02914",
+    "api": 4,
+    "kaggle": 3
+   },
+   {
+    "id": "2506.02955",
+    "api": 3,
+    "kaggle": 2
+   },
+   {
+    "id": "2506.03278",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.03371",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.03441",
+    "api": 3,
+    "kaggle": 2
+   },
+   {
+    "id": "2506.03467",
+    "api": 4,
+    "kaggle": 3
+   },
+   {
+    "id": "2506.03583",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.03591",
+    "api": 3,
+    "kaggle": 2
+   },
+   {
+    "id": "2506.03711",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.03773",
+    "api": 3,
+    "kaggle": 2
+   },
+   {
+    "id": "2506.03830",
+    "api": 4,
+    "kaggle": 3
+   },
+   {
+    "id": "2506.03979",
+    "api": 3,
+    "kaggle": 2
+   },
+   {
+    "id": "2506.04019",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.04292",
+    "api": 4,
+    "kaggle": 3
+   },
+   {
+    "id": "2506.04315",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.04600",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.04712",
+    "api": 3,
+    "kaggle": 2
+   },
+   {
+    "id": "2506.04713",
+    "api": 4,
+    "kaggle": 3
+   },
+   {
+    "id": "2506.04730",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.04920",
+    "api": 2,
+    "kaggle": 1
+   },
+   {
+    "id": "2506.05308",
+    "api": 4,
+    "kaggle": 3
+   },
+   {
+    "id": "2506.05712",
+    "api": 3,
+    "kaggle": 2
+   }
+  ],
+  "v1_date_mismatch_api_vs_kaggle": []
+ },
+ "missing_in_kaggle": [],
+ "missing_in_api": [],
+ "output": {
+  "path": "data/raw/discovery.jsonl",
+  "sha256": "c65e31bd6cabf5c8be4ed52e6cc5d22b3d016147ec4cf5f1e93b0f5af3febfc5"
+ },
+ "warnings": []
+}
