@@ -228,11 +228,11 @@ Intro2DS---ArXiv-Project/
 
 ## 👥 4. Thành viên & Phân công
 
-N   hóm sẽ **tổng hợp dải ID và chạy chung toàn bộ 25.000 bài** tập trung (crawl và parse) trên 1-2 máy. Ở bước cuối cùng của M3, dữ liệu tổng sẽ được trích xuất ra thành 5 phần tương ứng với dải ID cá nhân để từng thành viên tự đưa lên Hugging Face. Tất cả 5 thành viên đều tham gia gán nhãn thủ công (≥1 bài/bạn) để hiểu trọn pipeline khi bảo vệ.
+Mỗi người **crawl 5.000 bài** trên dải ID cá nhân của mình (tổng **25.000 bài**) rồi gom kết quả lên Google Drive chung. Sau đó nhóm **parse chung toàn bộ 25.000 bài** tập trung (1-2 máy). Ở bước cuối cùng của M3, dữ liệu tổng được trích xuất thành 5 phần tương ứng với dải ID cá nhân để từng thành viên tự đưa lên Hugging Face. Tất cả 5 thành viên đều tham gia gán nhãn thủ công (≥1 bài/bạn) để hiểu trọn pipeline khi bảo vệ.
 
 | Thành viên | Dải ID cá nhân | Vai trò Lead | Nhiệm vụ chính |
 |---|---|---|---|
-| **Tôn Thất Kiên** | 2025-06 (788 → 5787) | Discovery & Crawling (M1) | Khảo sát Discovery (P1-00), Crawler (P2-01), LaTeX Cleanup (P2-05), Chạy crawl chung (P3-02a), Báo cáo M1, Poster |
+| **Tôn Thất Kiên** | 2025-06 (788 → 5787) | Discovery & Crawling (M1) | Khảo sát Discovery (P1-00), Crawler (P2-01), LaTeX Cleanup (P2-05), Báo cáo M1, Poster |
 | **Phạm Gia Bảo** | 2025-03 (16914 → 21913) | External API & Storage (M1, M3) | Schema & Mock (P1-02), S2 API & Profiler (P2-02), Benchmark M1, Feature Eng, HF Exporter (P4-02) |
 | **Trần Ngô Uyên Nhi** | 2025-02/03 (18235 → 1913) | Hierarchical Parser (M2) | Khung Jupyter Book (P1-03), Resolver & Tree Builder (P2-03), Báo cáo M2, Benchmark M2, Reviewer parse chung (P3-03a) |
 | **Đinh Công Khang** | 2024-11 (3799 → 8798) | Dedup & BibTeX (M2) | Spec LaTeX (P1-04), BibTeX & Dedup (P2-04), Runner `main.py` (P3-01), Chạy parse chung (P3-03a) |
@@ -263,7 +263,7 @@ Mỗi task có **1 Owner + 2 Reviewers** (xem bảng task ở mục 5). Owner vi
 ```
 Tuần  12/10 ─ 15/10 : Giai đoạn 1 – Khảo sát, Repo, Schema, Spec
       14/10 ─ 26/10 : Giai đoạn 2 – Viết module (crawler, parser, ML)
-      26/10 ─ 28/10 : ĐỢT 1 – Crawl chung 25.000 bài
+      26/10 ─ 28/10 : ĐỢT 1 – Mỗi người crawl dải cá nhân (5.000 bài), gom lên Drive
       29/10 ─ 02/11 : Benchmark Colab M1 + Báo cáo M1  ──► NỘP M1
       30/10 ─ 06/11 : ĐỢT 2 – Parse chung 25.000 bài
       07/11 ─ 12/11 : Benchmark Colab M2 + Báo cáo M2  ──► NỘP M2
@@ -305,7 +305,7 @@ Tuần  12/10 ─ 15/10 : Giai đoạn 1 – Khảo sát, Repo, Schema, Spec
 | ID | Task | Owner | Reviewer | Thời gian | Phụ thuộc |
 |---|---|---|---|---|---|
 | P3-01 | Đóng gói Pipeline Runner (`main.py`) | Khang | Kiên | 26/10 – 28/10 | P2-01..05 |
-| P3-02a | **Crawl chung M1** (25.000 bài, chạy tập trung) | Kiên | Kiệt | 26/10 – 28/10 | P2-01, P2-02 |
+| P3-02a | **Crawl thật M1** (mỗi người 5.000 bài trên dải cá nhân, gom lên Drive; tổng 25.000 bài) | Cả 5 | Kiên, Bảo | 26/10 – 28/10 | P2-01, P2-02 |
 | P3-02b | Colab Benchmark M1 & Summary Export | Bảo | Kiên | 29/10 – 30/10 | P3-02a |
 | P3-03a | **Parse chung M2** (25.000 bài, chạy tập trung) | Khang | Nhi | 30/10 – 06/11 | P3-01, P3-02a |
 | P3-03b | Colab Benchmark M2 & Parse Summary | Nhi | Khang | 07/11 – 08/11 | P3-03a |
@@ -880,7 +880,7 @@ python -m src.main --id_start 2506.00788 --id_end 2506.05787
 | `--config` | Đường dẫn file cấu hình (mặc định `configs/config.yaml`) |
 | `--no_resume` | Bỏ qua checkpoint, chạy lại từ đầu |
 
-> 📌 Ví dụ trên là một dải ID. Khi chạy thật, 5 dải ID cá nhân (mục 4) được tổng hợp và chạy **tập trung** trên 1-2 máy.
+> 📌 Ví dụ trên là một dải ID cá nhân. Khi chạy thật: **crawl (M1)** mỗi người chạy dải của mình rồi gom lên Drive; **parse (M2)** chạy **tập trung** trên bộ 25.000 bài đã gom.
 
 **Checkpoint/Resume:** nếu chương trình bị ngắt (mất mạng, tắt máy), chỉ cần **chạy lại đúng lệnh cũ**, nó sẽ tiếp tục từ bài đang dở, không tải lại từ đầu.
 
@@ -899,11 +899,11 @@ pytest -q
 
 ### 10.4 Kế hoạch chạy dữ liệu thật
 
-1. **Đợt 1 (Crawl chung M1, 26/10 → 28/10):** đại diện nhóm (Kiên/Bảo) cấu hình và cắm máy chạy crawler tập trung toàn bộ 25.000 ID. *Crawl source trước, gọi S2 API bổ sung sau.*
-2. **Đợt 2 (Parse chung M2, 30/10 → 06/11):** **đóng băng parser**, rồi đại diện nhóm (Nhi/Khang) chạy parser đồng loạt cho 25.000 bài đã tải.
+1. **Đợt 1 (Crawl riêng M1, 26/10 → 28/10):** mỗi người crawl 5.000 bài trên dải ID cá nhân, rồi gom toàn bộ kết quả (mã nguồn + `references.json`) lên Drive chung. *Crawl source trước, gọi S2 API bổ sung sau.*
+2. **Đợt 2 (Parse chung M2, 30/10 → 06/11):** **đóng băng parser**, rồi đại diện nhóm (Nhi/Khang) chạy parser đồng loạt cho 25.000 bài đã gom trên Drive.
 3. **Đợt 3 (Matching & Upload, 31/10 → 22/11):** gán nhãn thủ công → train mô hình → xuất 6 bảng Parquet tổng. Dùng script cắt (filter) 6 bảng này theo dải ID của từng người để tự nộp lên Hugging Face.
 
-> ⚠️ Chạy thật tốn thời gian (delay ≥ 3s/request × nhiều version × 25.000 bài). **Hãy chạy thử 5-10 bài trước**, rồi mới chạy cả dải.
+> ⚠️ Chạy thật tốn thời gian (delay ≥ 3s/request × nhiều version × 5.000 bài/người). **Hãy chạy thử 5-10 bài trước**, rồi mới chạy cả dải.
 
 ---
 
@@ -950,6 +950,8 @@ def test_mrr():
 | File `.tex` / `.bib` nguồn (`data/sources/`) | Google Drive chung | ❌ **Không** |
 | Nhãn `ground_truth.json` (`data/labels/`) | Google Drive chung / HF Private | ❌ **Không** |
 | `summary_stats.json` (nhẹ) | `book-repo/` (repo riêng) | ✅ Có (ở repo Book) |
+
+**Gom dữ liệu crawl:** mỗi người upload kết quả crawl dải cá nhân (mã nguồn + `references.json`) lên Drive chung trước khi chạy parse chung.
 
 **Giữ lại file `.tex`/`.bib` gốc** trong thư mục làm việc/Drive để lưu trữ và truy vấn local khi cần.
 
@@ -1048,7 +1050,7 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 
 - 📌 **Được phép** tham khảo tài liệu online, nhưng **bắt buộc** ghi citation đầy đủ trong **code** (docstring/comment) **và báo cáo**.
 - 🧠 Dữ liệu và mô hình phải do **chính nhóm tự triển khai và giải thích**; mỗi thành viên phải hiểu phần của mình để bảo vệ.
-- 👥 Dữ liệu 25.000 bài được crawl/parse **tập trung**; cả 5 thành viên đều tham gia gán nhãn thủ công và tự upload bộ Hugging Face theo dải ID cá nhân.
+- 👥 Mỗi thành viên tự crawl dải ID cá nhân; phần parse chạy **tập trung** cho cả 25.000 bài; cả 5 thành viên đều tham gia gán nhãn thủ công và tự upload bộ Hugging Face theo dải ID cá nhân.
 
 **Mẫu citation trong code:**
 ```python
