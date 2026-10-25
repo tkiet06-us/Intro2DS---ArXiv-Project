@@ -9,7 +9,11 @@ Thiet ke:
 
 Cai dat:  pip install requests feedparser sickle pandas psutil
 Chay benchmark: python discovery.py --mode benchmark --contact "email@example.com" ...
-Chay that:      python discovery.py --mode full --id_start 2506.00788 --id_end 2506.05787 --contact "email" --kaggle_json ...
+Chay that:      python discovery.py --mode full --ranges ranges.txt --total-ids 25000 --contact "email" --kaggle_json ...
+  (hoac 1 dai: --id_start 2506.00788 --id_end 2506.05787)
+ranges.txt: moi dong 1 dai "ID_dau ID_cuoi" (dong trong hoac sau dau # bi bo qua). Cac dai khong duoc chong len nhau.
+Che do full co CHECKPOINT/RESUME: sau moi batch API ghi noi tiep vao --out; chay lai CUNG LENH se bo qua ID da co.
+  Muon chay lai tu dau: them --fresh (hoac doi --out).
 (moi co --xxx-yyy deu nhan them dang --xxx_yyy; ID la ID day du YYMM.NNNNN, dai co the di qua nhieu thang)
 """
 import argparse, hashlib, json, math, os, platform, re, shlex, statistics as st, subprocess, sys, time
@@ -72,6 +76,57 @@ def range_size(id_start, id_end):
 def make_ids(id_start, n):
     prefix, start = parse_id(id_start)
     return [f"{prefix}.{i:05d}" for i in range(start, start + n)]
+
+def load_ranges(a):
+    """Doc danh sach dai ID: tu file --ranges (moi dong 'start end') hoac tu --id-start/--id-end.
+    Kiem tra dinh dang, thu tu, chong lan. Tra ve list[(start, end)] da sap xep."""
+    if a.ranges_file:
+        if not os.path.exists(a.ranges_file):
+            sys.exit(f"Khong thay file dai ID: {a.ranges_file}")
+        ranges = []
+        with open(a.ranges_file, encoding="utf-8") as f:
+            for ln, line in enumerate(f, 1):
+                line = line.split("#")[0].strip()
+                if not line:
+                    continue
+                parts = line.replace(",", " ").split()
+                if len(parts) != 2:
+                    sys.exit(f"{a.ranges_file}, dong {ln}: can dung 2 ID ('start end'), gap: {line!r}")
+                ranges.append((parts[0], parts[1]))
+        if not ranges:
+            sys.exit(f"{a.ranges_file} khong co dai nao.")
+    else:
+        ranges = [(a.id_start, a.id_end)]
+    for s, e in ranges:
+        range_size(s, e)                  # kiem tra dinh dang + start <= end
+    ranges.sort()
+    for (s1, e1), (s2, e2) in zip(ranges, ranges[1:]):
+        if s2 <= e1:
+            sys.exit(f"Hai dai chong len nhau: [{s1}, {e1}] va [{s2}, {e2}].")
+    return ranges
+
+def in_ranges(ids_s, ranges):
+    """Mask pandas: ID nam trong BAT KY dai nao (ID cung do rong YYMM.NNNNN => so sanh chuoi dung)."""
+    mask = None
+    for s, e in ranges:
+        m = (ids_s >= s) & (ids_s <= e)
+        mask = m if mask is None else (mask | m)
+    return mask
+
+def build_ids(ranges, kaggle):
+    """Tap ID can hoi API. Dai trong 1 thang: sinh du ID (khong phu thuoc snapshot).
+    Dai qua nhieu thang: lay ID tu snapshot Kaggle. Tra ve (ids da sap xep, ID thieu trong Kaggle, cac dai lay tu snapshot)."""
+    ids, missing_kaggle, from_snapshot = [], [], []
+    for s, e in ranges:
+        n = range_size(s, e)
+        if n is not None:
+            part = make_ids(s, n)
+            missing_kaggle += [i for i in part if i not in kaggle]
+        else:
+            part = [i for i in kaggle if s <= i <= e]
+            from_snapshot.append((s, e))
+        ids += part
+    return sorted(set(ids)), missing_kaggle, from_snapshot
 
 # ------------------------------------------------------------------ cac worker
 def worker_api(a, ids):
@@ -247,10 +302,12 @@ def api_get(params, ua, retries=4):
             time.sleep(DELAY * (2 ** (k + 1)))
     raise RuntimeError(f"API that bai sau {retries} lan thu: {last}")
 
-def api_fetch(ids, a, ua, api, req_log, label):
-    """Goi API theo batch, ghi vao `api` va log tung request (de kiem tra duoc)."""
+def api_fetch(ids, a, ua, api, req_log, label, sink=None):
+    """Goi API theo batch, ghi vao `api` va log tung request (de kiem tra duoc).
+    `sink(batch_dict)` (neu co) duoc goi SAU MOI BATCH de ghi checkpoint ra dia."""
     import feedparser
     for i in range(0, len(ids), a.batch):
+        new = {}
         chunk = ids[i:i + a.batch]
         t1 = time.perf_counter()
         r, attempts = api_get({"id_list": ",".join(chunk), "max_results": len(chunk)}, ua)
@@ -258,23 +315,53 @@ def api_fetch(ids, a, ua, api, req_log, label):
         for e in entries:
             m = re.search(r"arxiv\.org/abs/(.+?)v(\d+)$", e.id)
             if m:
-                api[m.group(1)] = {
+                new[m.group(1)] = api[m.group(1)] = {
                     "n_versions": int(m.group(2)),
                     "v1_date": e.get("published", ""),
                     "latest_version_date": e.get("updated", ""),
                     "title": " ".join(e.get("title", "").split()),
-                    "authors": ", ".join(x.name for x in e.get("authors", []) if "name" in x),
+                    "authors": [x.name for x in e.get("authors", []) if "name" in x],
+                    "venue": " ".join(e["arxiv_journal_ref"].split()) if e.get("arxiv_journal_ref") else None,
                 }
+        if sink and new:
+            sink(new)
         req_log.append({"pass": label, "ids": len(chunk), "attempts": attempts, "entries": len(entries),
                         "seconds": round(time.perf_counter() - t1, 3)})
         print(f"   [{label}] {min(i + a.batch, len(ids))}/{len(ids)} ID ({req_log[-1]['seconds']}s)", flush=True)
         if i + a.batch < len(ids):
             time.sleep(DELAY)
 
+def load_jsonl(path):
+    """Doc jsonl -> {arxiv_id: row}. Dong hong (vd dong cuoi bi cat khi crash) bi bo qua."""
+    rows = {}
+    if not os.path.exists(path):
+        return rows
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                rows[r["arxiv_id"]] = r
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return rows
+
+def write_jsonl(path, rows):
+    """Ghi atomically (tmp -> replace)."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+
 def run_full(a):
     import pandas as pd
-    print(f"--- CHAY DISCOVERY TOAN DAI ({a.id_start} -> {a.id_end}) ---")
-    exp = range_size(a.id_start, a.id_end)          # None neu dai di qua nhieu thang
+    ranges = a.ranges
+    print(f"--- CHAY DISCOVERY TOAN DAI ({len(ranges)} dai) ---")
+    for s_, e_ in ranges:
+        print(f"   {s_} -> {e_}")
     ua = f"DS-Project-HCMUS-arXiv-crawler/0.1 (student project; contact: {a.contact})"
     env = env_info(a)
     warnings = []
@@ -291,7 +378,7 @@ def run_full(a):
                       convert_dates=False) as reader:
         for ch in reader:
             ids_s = ch["id"].astype(str)
-            sub = ch[(ids_s >= a.id_start) & (ids_s <= a.id_end)]   # ID cung do rong YYMM.NNNNN => so sanh chuoi dung
+            sub = ch[in_ranges(ids_s, ranges)]       # loc theo TAT CA cac dai trong 1 lan quet
             for aid, vs in zip(sub["id"].astype(str), sub["versions"]):
                 kaggle[aid] = {v["version"]: iso_utc(v["created"]) for v in vs} if isinstance(vs, list) else {}
     t_kaggle = time.perf_counter() - t
@@ -301,57 +388,92 @@ def run_full(a):
           f"RAM dinh {ram['peak_after_kaggle_scan_mb']} MB).", flush=True)
 
     # ---- tap ID can hoi API
-    if exp is not None:                              # cung thang: sinh du dai, khong phu thuoc snapshot
-        ids = make_ids(a.id_start, exp)
-        missing_kaggle = [i for i in ids if i not in kaggle]
-    else:                                            # nhieu thang: do dai moi thang chua biet => lay tu snapshot
-        ids = sorted(kaggle)
-        missing_kaggle = []
-        warnings.append("Dai di qua nhieu thang: tap ID lay tu snapshot Kaggle (khong sinh duoc tu 2 dau mut).")
+    ids, missing_kaggle, from_snapshot = build_ids(ranges, kaggle)
+    if from_snapshot:
+        warnings.append(f"{len(from_snapshot)} dai di qua nhieu thang: tap ID lay tu snapshot Kaggle "
+                        f"(khong sinh duoc tu 2 dau mut): {from_snapshot}")
     if len(ids) != a.total_ids:
-        warnings.append(f"Co {len(ids)} ID trong dai nhung --total-ids = {a.total_ids}.")
+        warnings.append(f"Co {len(ids)} ID trong cac dai nhung --total-ids = {a.total_ids}.")
     if missing_kaggle:
         warnings.append(f"{len(missing_kaggle)} ID khong co trong snapshot Kaggle (van hoi API).")
 
-    # ---- 2) goi API toan dai (batch)
-    n_req_expected = math.ceil(len(ids) / a.batch)
-    print(f"2. Goi arXiv API: {len(ids)} ID, batch {a.batch} => {n_req_expected} request...", flush=True)
-    t = time.perf_counter()
-    api, req_log = {}, []
-    api_fetch(ids, a, ua, api, req_log, "lan 1")
-    missing = [i for i in ids if i not in api]
-    if missing:
-        print(f"   {len(missing)} ID chua co ket qua, hoi lai 1 lan...", flush=True)
-        time.sleep(DELAY)
-        api_fetch(missing, a, ua, api, req_log, "hoi lai")
-    missing_api = [i for i in ids if i not in api]
-    if missing_api:
-        warnings.append(f"{len(missing_api)} ID khong co tren API (bo qua, khong ghi vao jsonl): {missing_api[:10]}...")
-    t_api = time.perf_counter() - t
-
-    # ---- 3) doi chieu API vs Kaggle (API la chuan) + ghi jsonl
-    print(f"3. Ghi ket qua ra {a.out} ...", flush=True)
-    t = time.perf_counter()
-    mismatch, v1_mismatch, written = [], [], 0
+    # ---- CHECKPOINT: doc ket qua cu (neu co), bo qua ID da xong
     out_dir = os.path.dirname(a.out)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    tmp = a.out + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        for aid in ids:
-            ai = api.get(aid)
-            if not ai:
-                continue
-            vd = kaggle.get(aid, {})
-            if aid in kaggle and len(vd) != ai["n_versions"]:
-                mismatch.append({"id": aid, "api": ai["n_versions"], "kaggle": len(vd)})
-            if "v1" in vd and vd["v1"] != ai["v1_date"]:
-                v1_mismatch.append(aid)
-            f.write(json.dumps({"arxiv_id": aid, "n_versions": ai["n_versions"], "v1_date": ai["v1_date"],
-                                "latest_version_date": ai["latest_version_date"], "version_dates": vd,
-                                "title": ai["title"], "authors": ai["authors"]}, ensure_ascii=False) + "\n")
-            written += 1
-    os.replace(tmp, a.out)
+    if a.fresh and os.path.exists(a.out):
+        os.remove(a.out)
+    prev = load_jsonl(a.out)
+    for r in prev.values():
+        if not isinstance(r.get("authors"), list) or "venue" not in r:
+            sys.exit(f"{a.out} la file cu (authors khong phai list / thieu venue). "
+                     "Dung --fresh hoac doi --out de chay lai tu dau.")
+    idset = set(ids)
+    resumed = [i for i in ids if i in prev]
+    outside = len(prev) - len(resumed)
+    if outside:
+        warnings.append(f"{a.out} co {outside} ID nam ngoai cac dai hien tai: bi loai khoi file ket qua.")
+    todo = [i for i in ids if i not in prev]
+    # ghi lai file sach (bo dong hong/ngoai dai) truoc khi noi tiep
+    write_jsonl(a.out, [prev[i] for i in resumed])
+    if resumed:
+        print(f"   RESUME: da co {len(resumed)}/{len(ids)} ID trong {a.out}, con {len(todo)} ID can hoi API.", flush=True)
+
+    def make_row(aid, ai):
+        vd = kaggle.get(aid, {})
+        return {"arxiv_id": aid, "n_versions": ai["n_versions"], "v1_date": ai["v1_date"],
+                "latest_version_date": ai["latest_version_date"], "version_dates": vd,
+                "title": ai["title"], "authors": ai["authors"], "venue": ai["venue"]}
+
+    # ---- 2) goi API (batch), ghi noi tiep vao jsonl sau MOI batch
+    n_req_expected = math.ceil(len(todo) / a.batch)
+    print(f"2. Goi arXiv API: {len(todo)} ID, batch {a.batch} => {n_req_expected} request...", flush=True)
+    t = time.perf_counter()
+    api, req_log = {}, []
+    fout = open(a.out, "a", encoding="utf-8")
+
+    def sink(batch):
+        for aid, ai in batch.items():
+            fout.write(json.dumps(make_row(aid, ai), ensure_ascii=False) + "\n")
+        fout.flush()
+        os.fsync(fout.fileno())
+
+    try:
+        if todo:
+            api_fetch(todo, a, ua, api, req_log, "lan 1", sink)
+            missing = [i for i in todo if i not in api]
+            if missing:
+                print(f"   {len(missing)} ID chua co ket qua, hoi lai 1 lan...", flush=True)
+                time.sleep(DELAY)
+                api_fetch(missing, a, ua, api, req_log, "hoi lai", sink)
+    except RuntimeError as ex:
+        fout.close()
+        sys.exit(f"\nDUNG GIUA CHUNG: {ex}\nTien do da luu trong {a.out}. Chay lai CUNG LENH de tiep tuc.")
+    finally:
+        fout.close()
+    t_api = time.perf_counter() - t
+
+    # ---- 3) gop + doi chieu API vs Kaggle (API la chuan) + ghi file cuoi (sap xep, khong trung)
+    print(f"3. Gop va ghi ket qua cuoi ra {a.out} ...", flush=True)
+    t = time.perf_counter()
+    rows = load_jsonl(a.out)
+    missing_api = [i for i in ids if i not in rows]
+    if missing_api:
+        warnings.append(f"{len(missing_api)} ID khong co tren API (bo qua, khong ghi vao jsonl): {missing_api[:10]}...")
+    mismatch, v1_mismatch = [], []
+    final = []
+    for aid in ids:
+        r = rows.get(aid)
+        if not r:
+            continue
+        vd = r["version_dates"]
+        if aid in kaggle and len(vd) != r["n_versions"]:
+            mismatch.append({"id": aid, "api": r["n_versions"], "kaggle": len(vd)})
+        if "v1" in vd and vd["v1"] != r["v1_date"]:
+            v1_mismatch.append(aid)
+        final.append(r)
+    write_jsonl(a.out, final)
+    written = len(final)
     t_write = time.perf_counter() - t
     t_total = time.perf_counter() - t_all            # wall time end-to-end (chua gom thoi gian TAI file Kaggle)
     ram["peak_final_mb"] = peak_ram_mb()             # RAM dinh toan tien trinh (max qua ca 3 giai doan)
@@ -371,7 +493,7 @@ def run_full(a):
     if a.hash_kaggle and "kaggle_file" in env:
         env["kaggle_file"]["sha256"] = sha256_file(a.kaggle_json)
     result = {
-        "mode": "full", "config": cfg, "environment": env,
+        "mode": "full", "config": cfg, "ranges": ranges, "environment": env,
         "timing_s": {"kaggle_scan": round(t_kaggle, 2), "api_total": round(t_api, 2), "write": round(t_write, 2),
                      "total_wall_end_to_end": round(t_total, 2),
                      "kaggle_download_given": dl,
@@ -380,7 +502,8 @@ def run_full(a):
         "api_requests": {"expected_batches": n_req_expected, "actual_requests": len(req_log),
                          "http_attempts": sum(r["attempts"] for r in req_log),
                          "seconds_stats": stats([r["seconds"] for r in req_log]), "log": req_log},
-        "counts": {"ids_in_range": len(ids), "in_kaggle": len(kaggle), "in_api": len(api), "written": written,
+        "counts": {"ids_in_range": len(ids), "in_kaggle": len(kaggle), "resumed_from_checkpoint": len(resumed),
+                   "fetched_this_run": len(api), "written": written,
                    "missing_in_kaggle": len(missing_kaggle), "missing_in_api": len(missing_api)},
         "check": {"n_versions_mismatch_api_vs_kaggle": mismatch, "v1_date_mismatch_api_vs_kaggle": v1_mismatch},
         "missing_in_kaggle": missing_kaggle, "missing_in_api": missing_api,
@@ -390,7 +513,7 @@ def run_full(a):
         json.dump(result, f, indent=1, ensure_ascii=False)
 
     print("--- HOAN THANH ---")
-    print(f"Ghi {written}/{len(ids)} bai ra {a.out}")
+    print(f"Ghi {written}/{len(ids)} bai ra {a.out} (resume: {len(resumed)}, hoi API lan nay: {len(api)})")
     print(f"Thoi gian: Kaggle {t_kaggle:.1f}s | API {t_api:.1f}s ({len(req_log)} request) | ghi {t_write:.1f}s")
     print(f"TONG wall time end-to-end: {t_total:.1f} s (~{t_total / 60:.2f} phut), chua tinh thoi gian tai file Kaggle"
           + (f"; gom tai: {t_total + dl:.0f} s" if dl else ""))
@@ -591,6 +714,9 @@ if __name__ == "__main__":
                 al.append("--" + n[2:].replace("-", "_"))
         ap.add_argument(*al, **kw)
     add("--mode", choices=["benchmark", "full"], default="benchmark", help="Che do chay")
+    add("--ranges", dest="ranges_file", default=None,
+        help="(mode full) file nhieu dai ID, moi dong 'ID_dau ID_cuoi'; neu co thi bo qua --id-start/--id-end")
+    add("--fresh", action="store_true", help="(mode full) bo checkpoint cu trong --out, chay lai tu dau")
     add("--id-start", default="2506.00788", help="ID day du bat dau (VD: 2506.00788)")
     add("--id-end", default="2506.05787", help="ID day du ket thuc (bao gom); co the khac thang voi --id-start")
     add("--n", type=int, default=50, help="so ID mau cho API trong che do benchmark")
@@ -611,8 +737,10 @@ if __name__ == "__main__":
     add("--report", default="discovery_full_result.json", help="(mode full) file bao cao do thoi gian/doi chieu")
     add("--worker", default=None, help="(noi bo)")
     a = ap.parse_args()
-    range_size(a.id_start, a.id_end)   # kiem tra dinh dang + thu tu ID som
-    
+    if a.ranges_file and not a.worker and a.mode != "full":
+        sys.exit("--ranges chi dung cho --mode full (benchmark dung --id-start/--id-end).")
+    a.ranges = load_ranges(a)           # kiem tra dinh dang, thu tu, chong lan som
+
     if a.worker:
         run_worker(a)
     elif a.mode == "full":
