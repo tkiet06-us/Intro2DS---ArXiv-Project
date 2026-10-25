@@ -132,7 +132,7 @@ Có IDD:        M1 ──────────────────►
 1. Gán nhãn (thủ công + tự động) → chia Train / Valid / Test.
 2. Feature Engineering (Levenshtein, Jaccard n-gram, TF-IDF cosine).
 3. Train Ranking Model → xuất top-5 ứng viên → đo **MRR** trên tập Test.
-4. Xuất 6 bảng Parquet → upload Hugging Face.
+4. Xuất 6 bảng Parquet **tổng** (25.000 bài) → dùng script filter tách thành 5 bộ theo dải ID cá nhân → mỗi thành viên tự upload lên Hugging Face.
 
 ---
 
@@ -228,14 +228,14 @@ Intro2DS---ArXiv-Project/
 
 ## 👥 4. Thành viên & Phân công
 
-Mỗi người **crawl và parse 5.000 bài** trên một dải ID riêng (tổng **25.000 bài**), và đều tham gia gán nhãn thủ công để hiểu trọn pipeline khi bảo vệ Poster.
+N   hóm sẽ **tổng hợp dải ID và chạy chung toàn bộ 25.000 bài** tập trung (crawl và parse) trên 1-2 máy. Ở bước cuối cùng của M3, dữ liệu tổng sẽ được trích xuất ra thành 5 phần tương ứng với dải ID cá nhân để từng thành viên tự đưa lên Hugging Face. Tất cả 5 thành viên đều tham gia gán nhãn thủ công (≥1 bài/bạn) để hiểu trọn pipeline khi bảo vệ.
 
 | Thành viên | Dải ID cá nhân | Vai trò Lead | Nhiệm vụ chính |
 |---|---|---|---|
-| **Tôn Thất Kiên** | 2025-06 (788 → 5787) | Discovery & Crawling (M1) | Khảo sát Discovery (P1-00), Crawler (P2-01), LaTeX Cleanup (P2-05), Báo cáo M1, Poster |
+| **Tôn Thất Kiên** | 2025-06 (788 → 5787) | Discovery & Crawling (M1) | Khảo sát Discovery (P1-00), Crawler (P2-01), LaTeX Cleanup (P2-05), Chạy crawl chung (P3-02a), Báo cáo M1, Poster |
 | **Phạm Gia Bảo** | 2025-03 (16914 → 21913) | External API & Storage (M1, M3) | Schema & Mock (P1-02), S2 API & Profiler (P2-02), Benchmark M1, Feature Eng, HF Exporter (P4-02) |
-| **Trần Ngô Uyên Nhi** | 2025-02/03 (18235 → 1913) | Hierarchical Parser (M2) | Khung Jupyter Book (P1-03), Resolver & Tree Builder (P2-03), Báo cáo M2, Benchmark M2 |
-| **Đinh Công Khang** | 2024-11 (3799 → 8798) | Dedup & BibTeX (M2) | Spec LaTeX (P1-04), BibTeX & Dedup (P2-04), Runner `main.py` (P3-01) |
+| **Trần Ngô Uyên Nhi** | 2025-02/03 (18235 → 1913) | Hierarchical Parser (M2) | Khung Jupyter Book (P1-03), Resolver & Tree Builder (P2-03), Báo cáo M2, Benchmark M2, Reviewer parse chung (P3-03a) |
+| **Đinh Công Khang** | 2024-11 (3799 → 8798) | Dedup & BibTeX (M2) | Spec LaTeX (P1-04), BibTeX & Dedup (P2-04), Runner `main.py` (P3-01), Chạy parse chung (P3-03a) |
 | **Trần Tuấn Kiệt** | 2024-10 (13025 → 18024) | Machine Learning (M3) | Repo GitHub (P1-01), Spec ML (P1-05), Ranking Model, MRR, README spec, Poster |
 
 > ⚠️ **Nhi**: dải ID `18235 → 1913` đi qua hai tháng (2025-02 và 2025-03). Cả nhóm cần thống nhất rõ cách xử lý đoạn "quay vòng" này trước khi chạy crawl để không bị trùng/sót ID.
@@ -262,14 +262,14 @@ Mỗi task có **1 Owner + 2 Reviewers** (xem bảng task ở mục 5). Owner vi
 
 ```
 Tuần  12/10 ─ 15/10 : Giai đoạn 1 – Khảo sát, Repo, Schema, Spec
-      14/10 ─ 25/10 : Giai đoạn 2 – Viết module (crawler, parser, ML)
-      22/10 ─ 28/10 : ĐỢT 1 – Crawl thật 25.000 bài
+      14/10 ─ 26/10 : Giai đoạn 2 – Viết module (crawler, parser, ML)
+      26/10 ─ 28/10 : ĐỢT 1 – Crawl chung 25.000 bài
       29/10 ─ 02/11 : Benchmark Colab M1 + Báo cáo M1  ──► NỘP M1
-      30/10 ─ 06/11 : ĐỢT 2 – Parse thật 25.000 bài
+      30/10 ─ 06/11 : ĐỢT 2 – Parse chung 25.000 bài
       07/11 ─ 12/11 : Benchmark Colab M2 + Báo cáo M2  ──► NỘP M2
       31/10 ─ 08/11 : Gán nhãn dữ liệu
       08/11 ─ 14/11 : Train model, xuất predictions
-      15/11 ─ 18/11 : Upload Hugging Face
+      15/11 ─ 18/11 : Xuất 6 bảng tổng, tách 5 bộ & upload Hugging Face
       15/11 ─ 20/11 : Thiết kế Poster A2
       20/11 ─ 22/11 : Kiểm thử cuối + NỘP M3
 ```
@@ -280,49 +280,49 @@ Tuần  12/10 ─ 15/10 : Giai đoạn 1 – Khảo sát, Repo, Schema, Spec
 
 #### Giai đoạn 1 – Nền móng (12/10 → 15/10)
 
-| ID | Task | Owner | Reviewers | Thời gian | Phụ thuộc |
+| ID | Task | Owner | Reviewer | Thời gian | Phụ thuộc |
 |---|---|---|---|---|---|
-| P1-00 | Khảo sát Discovery & phương pháp crawl | Kiên | Bảo, Khang | 12/10 – 14/10 | – |
-| P1-01 | Tạo repo GitHub & khung dự án | Kiệt | Kiên, Khang | 12/10 – 13/10 | – |
-| P1-02 | Data Schema & Mock Generator | Bảo | Kiệt, Nhi | 12/10 – 15/10 | – |
-| P1-03 | Khung Jupyter Book (repo riêng) | Nhi | Kiên, Khang | 12/10 – 15/10 | – |
-| P1-04 | Khảo sát LaTeX & Spec Tree | Khang | Nhi, Kiệt | 12/10 – 15/10 | – |
-| P1-05 | Thiết kế kiến trúc ML & Predictions Spec | Kiệt | Bảo, Nhi | 12/10 – 15/10 | – |
+| P1-00 | Khảo sát Discovery & phương pháp crawl | Kiên | Bảo | 12/10 – 14/10 | – |
+| P1-01 | Tạo repo GitHub & khung dự án | Kiệt | Khang | 12/10 – 13/10 | – |
+| P1-02 | Data Schema & Mock Generator | Bảo | Kiệt | 12/10 – 15/10 | – |
+| P1-03 | Khung Jupyter Book (repo riêng) | Nhi | Khang | 12/10 – 15/10 | – |
+| P1-04 | Khảo sát LaTeX & Spec Tree | Khang | Nhi | 12/10 – 15/10 | – |
+| P1-05 | Thiết kế kiến trúc ML & Predictions Spec | Kiệt | Bảo | 12/10 – 15/10 | – |
 
-#### Giai đoạn 2 – Viết module (14/10 → 25/10)
+#### Giai đoạn 2 – Viết module (14/10 → 26/10)
 
-| ID | Task | Owner | Reviewers | Thời gian | Phụ thuộc |
+| ID | Task | Owner | Reviewer | Thời gian | Phụ thuộc |
 |---|---|---|---|---|---|
-| P2-01 | Module Crawling arXiv | Kiên | Bảo, Kiệt | 14/10 – 20/10 | P1-00, P1-02 |
-| P2-02 | Module S2 API & Profiler | Bảo | Kiên, Nhi | 16/10 – 22/10 | P1-02 |
-| P2-03 | Multi-file Resolver & Tree Builder | Nhi | Khang, Kiệt | 16/10 – 23/10 | P1-02, P1-04 |
-| P2-05 | LaTeX Cleanup & Normalization | Kiên | Khang, Bảo | 16/10 – 23/10 | P1-02, P1-04 |
-| P2-04 | BibTeX Extractor & 2-level Dedup | Khang | Nhi, Kiệt | 16/10 – 25/10 | P1-02, P1-04, P2-03, P2-05 |
-| P2-06 | Preprocessing & Feature Engineering | Kiệt & Bảo | Khang, Kiên | 16/10 – 23/10 | P1-02, P1-05 |
+| P2-01 | Module Crawling arXiv | Kiên | Kiệt | 14/10 – 24/10 | P1-00, P1-02 |
+| P2-02 | Module S2 API & Profiler | Bảo | Nhi | 16/10 – 25/10 | P1-02 |
+| P2-03 | Multi-file Resolver & Tree Builder | Nhi | Khang | 16/10 – 24/10 | P1-02, P1-04 |
+| P2-05 | LaTeX Cleanup & Normalization | Kiên | Khang | 16/10 – 25/10 | P1-02, P1-04 |
+| P2-04 | BibTeX Extractor & 2-level Dedup | Khang | Nhi | 16/10 – 26/10 | P1-02, P1-04, P2-03, P2-05 |
+| P2-06 | Preprocessing & Feature Engineering | Kiệt & Bảo | Kiên | 16/10 – 26/10 | P1-02, P1-05 |
 
 #### Giai đoạn 3 – Chạy dữ liệu thật & Benchmark
 
-| ID | Task | Owner | Reviewers | Thời gian | Phụ thuộc |
+| ID | Task | Owner | Reviewer | Thời gian | Phụ thuộc |
 |---|---|---|---|---|---|
-| P3-01 | Đóng gói Pipeline Runner (`main.py`) | Khang | Kiên, Nhi | 26/10 – 28/10 | P2-01..05 |
-| P3-02a | **Crawl thật M1** (25.000 bài) | Cả 5 | Kiên, Bảo | 22/10 – 28/10 | P2-01, P2-02 |
-| P3-02b | Colab Benchmark M1 & Summary Export | Bảo | Kiên, Kiệt | 29/10 – 30/10 | P3-02a |
-| P3-03a | **Parse thật M2** (25.000 bài) | Cả 5 | Nhi, Khang | 30/10 – 06/11 | P3-01, P3-02a |
-| P3-03b | Colab Benchmark M2 & Parse Summary | Nhi | Khang, Kiệt | 07/11 – 08/11 | P3-03a |
-| P3-07 | Gán nhãn Reference Matching | Cả 5 | Kiệt, Bảo | 31/10 – 08/11 | P1-05, P1-02, P3-03a |
+| P3-01 | Đóng gói Pipeline Runner (`main.py`) | Khang | Kiên | 26/10 – 28/10 | P2-01..05 |
+| P3-02a | **Crawl chung M1** (25.000 bài, chạy tập trung) | Kiên | Kiệt | 26/10 – 28/10 | P2-01, P2-02 |
+| P3-02b | Colab Benchmark M1 & Summary Export | Bảo | Kiên | 29/10 – 30/10 | P3-02a |
+| P3-03a | **Parse chung M2** (25.000 bài, chạy tập trung) | Khang | Nhi | 30/10 – 06/11 | P3-01, P3-02a |
+| P3-03b | Colab Benchmark M2 & Parse Summary | Nhi | Khang | 07/11 – 08/11 | P3-03a |
+| P3-04 | Gán nhãn Reference Matching (cả 5 cùng gán) | Cả 5 | Kiệt | 31/10 – 08/11 | P1-05, P1-02, P3-03a |
 
 #### Giai đoạn 4 – Báo cáo, ML, Hugging Face, Poster
 
-| ID | Task | Owner | Reviewers | Thời gian | Phụ thuộc |
+| ID | Task | Owner | Reviewer | Thời gian | Phụ thuộc |
 |---|---|---|---|---|---|
-| P4-03a | Báo cáo Jupyter Book M1 & README update | Kiên & Bảo | Nhi, Kiệt | 30/10 – 02/11 | P3-02b |
-| P4-03b | Báo cáo Jupyter Book M2 | Nhi & Khang | Kiên, Bảo | 08/11 – 12/11 | P3-03b |
-| P4-01 | Huấn luyện model & đo MRR Top-5 | Kiệt | Bảo, Khang | 08/11 – 14/11 | P2-06, P3-07, P3-03a |
-| P4-02 | Xuất 6 bảng Parquet & upload Hugging Face | Bảo | Kiệt, Khang | 15/11 – 18/11 | P3-03a, P4-01 |
-| P4-04 | Thiết kế Poster A2 & Documentation | Kiên & Kiệt | Bảo, Khang | 15/11 – 20/11 | P4-01, P4-03b |
-| P4-05 | Benchmark cuối & nộp Moodle | Cả 5 | Kiên, Nhi | 20/11 – 22/11 | P4-01..04 |
+| P4-03a | Báo cáo Jupyter Book M1 & README update | Kiên & Bảo | Nhi | 30/10 – 02/11 | P3-02b |
+| P4-03b | Báo cáo Jupyter Book M2 | Nhi & Khang | Bảo | 08/11 – 12/11 | P3-03b |
+| P4-01 | Huấn luyện model & đo MRR Top-5 | Kiệt | Bảo | 08/11 – 14/11 | P2-06, P3-04, P3-03a |
+| P4-02 | Xuất 6 bảng Parquet tổng, tách 5 bộ theo dải ID & upload Hugging Face cá nhân | Bảo | Kiên | 15/11 – 18/11 | P3-03a, P4-01 |
+| P4-04 | Thiết kế Poster A2 & Documentation | Kiên & Kiệt | Bảo | 15/11 – 20/11 | P4-01, P4-03b |
+| P4-05 | Benchmark cuối & nộp Moodle | Cả 5 | Kiên | 20/11 – 22/11 | P4-01..04 |
 
-> 💡 **Cột "Phụ thuộc"** nghĩa là: task này chỉ bắt đầu đầy đủ khi các task trong cột đó đã xong. Nhờ mock data (IDD), nhiều task giai đoạn 2 vẫn có thể bắt đầu sớm dù M1 chưa crawl xong.
+> 💡 **Cột "Phụ thuộc"** nghĩa là: task này chỉ bắt đầu đầy đủ khi các task trong cột đó đã xong.
 
 ### 5.4 Sản phẩm cần nộp trên Moodle
 
@@ -330,7 +330,7 @@ Tuần  12/10 ─ 15/10 : Giai đoạn 1 – Khảo sát, Repo, Schema, Spec
 |---|---|
 | M1 | Link Code Repo (không có data) + Link Book Repo riêng + báo cáo M1 |
 | M2 | Link báo cáo Jupyter Book M2 |
-| M3 | Poster A2 `.pptx` (420 × 594 mm, dọc) + Link Hugging Face + Link Code Repo |
+| M3 | Poster A2 `.pptx` (420 × 594 mm, dọc) + Link Hugging Face (5 dataset cá nhân, mỗi thành viên 1 link ~5.000 bài) + Link Code Repo |
 
 ---
 
@@ -626,7 +626,7 @@ logger.info("Crawl xong %s (%d phiên bản)", arxiv_id, n_versions)   # dùng %
 - Đọc/ghi JSON và checkpoint **chỉ qua các hàm trong `src/common/utils_io.py`**, không mỗi người tự viết một kiểu.
 - Ghi file bằng `encoding="utf-8"`; JSON ghi với `ensure_ascii=False, indent=2` cho dễ đọc.
 - Ghi file **an toàn khi bị ngắt** (checkpoint): ghi ra file tạm rồi đổi tên, để Ctrl+C giữa chừng không tạo file hỏng.
-- Xử lý **từng bài một** rồi ghi ra đĩa và giải phóng bộ nhớ, không giữ cả dải 5.000 bài trong RAM.
+- Xử lý **từng bài một** rồi ghi ra đĩa và giải phóng bộ nhớ, không giữ cả dải ID trong RAM.
 - Cột/bảng Parquet phải **phẳng**, đúng kiểu như `src/schemas.py`; không nhét JSON dạng chuỗi hoặc object lồng nhau.
 
 #### 6.9.10 Quy tắc riêng cho crawler (bắt buộc)
@@ -746,7 +746,7 @@ Kết quả so sánh, lý do chọn và thời gian đo được ghi trong `docs
 
 #### Hugging Face Hub
 
-Dùng `huggingface_hub` để upload 6 bảng Parquet và Dataset Card. Cần `HF_TOKEN`. Hướng dẫn hosting chính thức xin từ Lab Instructors (task P4-02).
+Dùng `huggingface_hub` để upload 6 bảng Parquet và Dataset Card. Bộ tổng 25.000 bài được tách thành 5 bộ theo dải ID cá nhân; **mỗi thành viên dùng `HF_TOKEN` của mình** để upload bộ của mình. Cần `HF_TOKEN`. Hướng dẫn hosting chính thức xin từ Lab Instructors (task P4-02).
 
 ### 7.2 Giao diện nội bộ (module)
 
@@ -764,7 +764,7 @@ Dùng `huggingface_hub` để upload 6 bảng Parquet và Dataset Card. Cần `H
 | `m3_matching.features` | `preprocess`, `build_features` | Làm sạch & tạo đặc trưng |
 | `m3_matching.matching_model` | `MatchingModel.fit / .rank` | Huấn luyện & xếp hạng |
 | `m3_matching.evaluate` | `mrr(ranked, truth)` | Tính MRR |
-| `m3_matching.export_parquet` | `export_all(processed_dir, out_dir)` | Xuất 6 bảng |
+| `m3_matching.export_parquet` | `export_all(processed_dir, out_dir)` | Xuất 6 bảng tổng (kèm script filter tách 5 bộ theo dải ID) |
 
 > 🚧 Phần lớn hàm đang là **khung (stub)**, mỗi owner hiện thực theo task của mình. Chữ ký hàm có thể điều chỉnh khi code, nhưng **schema trong `src/schemas.py` phải ổn định** (xem IDD).
 
@@ -880,6 +880,8 @@ python -m src.main --id_start 2506.00788 --id_end 2506.05787
 | `--config` | Đường dẫn file cấu hình (mặc định `configs/config.yaml`) |
 | `--no_resume` | Bỏ qua checkpoint, chạy lại từ đầu |
 
+> 📌 Ví dụ trên là một dải ID. Khi chạy thật, 5 dải ID cá nhân (mục 4) được tổng hợp và chạy **tập trung** trên 1-2 máy.
+
 **Checkpoint/Resume:** nếu chương trình bị ngắt (mất mạng, tắt máy), chỉ cần **chạy lại đúng lệnh cũ**, nó sẽ tiếp tục từ bài đang dở, không tải lại từ đầu.
 
 ### 10.2 Chạy từng module (khi phát triển)
@@ -897,11 +899,11 @@ pytest -q
 
 ### 10.4 Kế hoạch chạy dữ liệu thật
 
-1. **Đợt 1 (22/10 → 28/10):** mỗi người crawl 5.000 bài trên dải ID cá nhân. *Crawl source trước, gọi S2 API bổ sung sau.*
-2. **Đợt 2 (30/10 → 06/11):** **đóng băng parser**, rồi mỗi người parse 5.000 bài đã crawl.
-3. **Đợt 3 (31/10 → 22/11):** gán nhãn → train → xuất predictions → upload HF.
+1. **Đợt 1 (Crawl chung M1, 26/10 → 28/10):** đại diện nhóm (Kiên/Bảo) cấu hình và cắm máy chạy crawler tập trung toàn bộ 25.000 ID. *Crawl source trước, gọi S2 API bổ sung sau.*
+2. **Đợt 2 (Parse chung M2, 30/10 → 06/11):** **đóng băng parser**, rồi đại diện nhóm (Nhi/Khang) chạy parser đồng loạt cho 25.000 bài đã tải.
+3. **Đợt 3 (Matching & Upload, 31/10 → 22/11):** gán nhãn thủ công → train mô hình → xuất 6 bảng Parquet tổng. Dùng script cắt (filter) 6 bảng này theo dải ID của từng người để tự nộp lên Hugging Face.
 
-> ⚠️ Chạy thật tốn thời gian (delay ≥ 3s/request × nhiều version × 5.000 bài). **Hãy chạy thử 5-10 bài trước**, rồi mới chạy cả dải.
+> ⚠️ Chạy thật tốn thời gian (delay ≥ 3s/request × nhiều version × 25.000 bài). **Hãy chạy thử 5-10 bài trước**, rồi mới chạy cả dải.
 
 ---
 
@@ -1046,7 +1048,7 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 
 - 📌 **Được phép** tham khảo tài liệu online, nhưng **bắt buộc** ghi citation đầy đủ trong **code** (docstring/comment) **và báo cáo**.
 - 🧠 Dữ liệu và mô hình phải do **chính nhóm tự triển khai và giải thích**; mỗi thành viên phải hiểu phần của mình để bảo vệ.
-- 👥 Cả 5 thành viên đều tự crawl/parse dải cá nhân và tham gia gán nhãn.
+- 👥 Dữ liệu 25.000 bài được crawl/parse **tập trung**; cả 5 thành viên đều tham gia gán nhãn thủ công và tự upload bộ Hugging Face theo dải ID cá nhân.
 
 **Mẫu citation trong code:**
 ```python
