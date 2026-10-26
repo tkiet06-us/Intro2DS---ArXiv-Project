@@ -38,3 +38,4 @@ data/raw/*.jsonl
 data/raw/*.json
 
 docs/*.md
+*.md
