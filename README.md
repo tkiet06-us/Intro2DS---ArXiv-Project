@@ -69,8 +69,8 @@ Mỗi tham khảo trong bài báo thường là một chuỗi chữ lộn xộn,
 ```mermaid
 flowchart TD
     subgraph M1["M1 - Discovery và Crawling"]
-        A["Danh sách <br> arXiv ID"] --> B["Tải source<br/>tar.gz hoặc gz"]
-        B --> C["Giải nén,<br/>xóa ảnh,<br/>giữ khối figure"]
+        A["Discovery qua API<br/>resolve ID được giao<br/>và mọi version"] --> B["Tải source<br/>tar.gz hoặc gz"]
+        B --> C["Giải nén,<br/>chỉ giữ .tex và .bib,<br/>giữ nguyên lệnh figure"]
         C --> D["metadata.json"]
         A --> E["Semantic <br> Scholar API"]
         E --> F["references.json"]
@@ -114,12 +114,13 @@ Có IDD:        M1 ──────────────────►
 ### 1.3 Luồng dữ liệu chi tiết
 
 **Step 1 – M1: Discovery & Crawling**
-1. Discovery: so sánh arXiv API (batch ID), OAI-PMH và Kaggle dataset; chọn phương pháp và đo tổng thời gian.
+1. Discovery (P1-00): dùng **arXiv API với `id_list`** để resolve các ID được giao và tìm **đủ mọi version** (v1, v2, …, vN) của từng bài; trích `v1_date`, `latest_version_date` và metadata cơ bản. arXiv API, OAI-PMH và Kaggle dataset chỉ là **"toolbox"** tham khảo, **không phải việc cần so sánh hay chọn**. Vẫn **đo tổng thời gian discovery** để đưa vào báo cáo M1.
 2. Tải **mọi version** (v1, v2, …) qua `export.arxiv.org/src/{id}v{n}`.
-3. Nhận diện `.tar.gz` và `.gz` đơn (chứa `.tex`); **xóa ảnh nhưng giữ lệnh `\begin{figure}`**; ghi log `size_before` / `size_after`.
+3. Nhận diện `.tar.gz` và `.gz` đơn (chứa `.tex`); **chỉ extract `.tex` và `.bib`** từ gói nguồn, file ảnh **không bao giờ** vào corpus; **giữ nguyên** `\begin{figure}` / `\includegraphics` trong `.tex`; ghi log `size_before` (gói nguồn tải về) / `size_after` (sau khi chỉ giữ `.tex`/`.bib`).
 4. Bài chỉ có PDF/Word → giữ **record rỗng** (thư mục version rỗng) và ghi log lỗi.
-5. Gọi Semantic Scholar lấy danh sách tham khảo, lưu trữ cục bộ đầy đủ và chỉ **lọc theo arXiv ID khi xuất bảng `references` Parquet**.
+5. Gọi Semantic Scholar lấy danh sách tham khảo (kèm `paperId`, `authors`, `year`, `publicationDate`, `venue` cho `ref_s2_id`, `ref_authors`, `ref_submission_date`), lưu trữ cục bộ đầy đủ và chỉ **lọc theo arXiv ID khi xuất bảng `references` Parquet**.
 6. Hỗ trợ CLI độc lập `--id_start --id_end` và **Checkpoint/Resume** (chạy lại sẽ tiếp tục từ chỗ dừng).
+7. **Profiler** đo xuyên suốt: RAM đỉnh & RAM trung bình, đĩa max, time/bài, `n_refs` & `n_refs_co_arxiv_id`, dung lượng output cuối, tổng thời gian discovery → xuất vào `summary_stats.json` cho báo cáo M1.
 
 **Step 2 – M2: Hierarchical Parsing**
 1. **Multi-file Resolver**: tìm file `.tex` chính, lần theo `\input{}` / `\include{}` để ghép toàn bộ nội dung.
@@ -141,7 +142,7 @@ Có IDD:        M1 ──────────────────►
 | Nhóm | Công cụ | Dùng để |
 |---|---|---|
 | Ngôn ngữ | **Python 3.11** | Toàn bộ pipeline |
-| Crawling | `arxiv`, `sickle` (OAI-PMH), `requests` | Discovery & tải source |
+| Crawling | `arxiv` (`id_list`), `requests`; `sickle` (OAI-PMH, tùy chọn) | Discovery & tải source |
 | Dữ liệu | `pandas`, `numpy`, `pyarrow` | Xử lý bảng, ghi Parquet |
 | Schema | `pydantic` v2 | Khai báo & kiểm tra kiểu dữ liệu |
 | Parsing | `re` (regex), `bibtexparser` | Phân tích LaTeX/BibTeX |
@@ -176,9 +177,10 @@ Intro2DS---ArXiv-Project/
 │   │   ├── ids.py               # Kiểm tra arXiv ID, đổi ID <-> tên folder [P1-02]
 │   │   └── utils_io.py          # Checkpoint, đọc/ghi JSON, logging
 │   ├── m1_crawling/
+│   │   ├── discovery.py         # Resolve ID qua API (id_list), liệt kê version [P1-00]
 │   │   ├── crawler.py           # Tải source arXiv                         [P2-01]
 │   │   ├── s2_api.py            # Semantic Scholar → references.json       [P2-02]
-│   │   └── profiler.py          # Đo RAM / đĩa / thời gian                 [P2-02]
+│   │   └── profiler.py          # Đo RAM đỉnh/TB, đĩa, time, size output    [P2-02]
 │   ├── m2_parsing/
 │   │   ├── latex_parser.py      # Multi-file Resolver                      [P2-03]
 │   │   ├── tree_builder.py      # Dựng hierarchy.json                      [P2-03]
@@ -206,7 +208,7 @@ Intro2DS---ArXiv-Project/
 │   └── m3_matching/             # Unit test cho module M3
 │
 ├── docs/                        # Tài liệu thiết kế (spec)
-│   ├── discovery_report.md      # So sánh phương pháp discovery            [P1-00]
+│   ├── discovery_report.md      # Báo cáo discovery: số version, thời gian [P1-00]
 │   ├── latex_spec.md            # Quy tắc dựng cây                         [P1-04]
 │   └── ml_design.md             # Thiết kế ML & predictions                [P1-05]
 │
@@ -228,21 +230,21 @@ Intro2DS---ArXiv-Project/
 
 ## 👥 4. Thành viên & Phân công
 
-Mỗi người **crawl 5.000 bài** trên dải ID cá nhân của mình (tổng **25.000 bài**) rồi gom kết quả lên Google Drive chung. Sau đó nhóm **parse chung toàn bộ 25.000 bài** tập trung (1-2 máy). Ở bước cuối cùng của M3, dữ liệu tổng được trích xuất thành 5 phần tương ứng với dải ID cá nhân để từng thành viên tự đưa lên Hugging Face. Tất cả 5 thành viên đều tham gia gán nhãn thủ công (≥1 bài/bạn) để hiểu trọn pipeline khi bảo vệ.
+Mỗi người **crawl 5.000 bài** trên dải ID cá nhân của mình (tổng **25.000 bài**) rồi gom kết quả lên Google Drive chung. Sau đó nhóm **parse chung toàn bộ 25.000 bài** tập trung (1-2 máy). Ở bước cuối cùng của M3, dữ liệu tổng được trích xuất thành 5 phần tương ứng với dải ID cá nhân để từng thành viên tự đưa lên Hugging Face. Tất cả 5 thành viên đều tham gia gán nhãn thủ công (**≥ 5 bài/bạn**) để hiểu trọn pipeline khi bảo vệ.
 
 | Thành viên | Dải ID cá nhân | Vai trò Lead | Nhiệm vụ chính |
 |---|---|---|---|
-| **Tôn Thất Kiên** | 2025-06 (788 → 5787) | Discovery & Crawling (M1) | Khảo sát Discovery (P1-00), Crawler (P2-01), LaTeX Cleanup (P2-05), Báo cáo M1, Poster |
-| **Phạm Gia Bảo** | 2025-03 (16914 → 21913) | External API & Storage (M1, M3) | Schema & Mock (P1-02), S2 API & Profiler (P2-02), Benchmark M1, Feature Eng, HF Exporter (P4-02) |
-| **Trần Ngô Uyên Nhi** | 2025-02/03 (18235 → 1913) | Hierarchical Parser (M2) | Khung Jupyter Book (P1-03), Resolver & Tree Builder (P2-03), Báo cáo M2, Benchmark M2, Reviewer parse chung (P3-03a) |
-| **Đinh Công Khang** | 2024-11 (3799 → 8798) | Dedup & BibTeX (M2) | Spec LaTeX (P1-04), BibTeX & Dedup (P2-04), Runner `main.py` (P3-01), Chạy parse chung (P3-03a) |
-| **Trần Tuấn Kiệt** | 2024-10 (13025 → 18024) | Machine Learning (M3) | Repo GitHub (P1-01), Spec ML (P1-05), Ranking Model, MRR, README spec, Poster |
+| **Tôn Thất Kiên** | 2025-06 (788 → 5787) | Discovery & Crawling (M1) | Discovery (P1-00), Crawler (P2-01), LaTeX Cleanup (P2-05), Báo cáo M1 (P4-03a), Poster (P4-04) |
+| **Phạm Gia Bảo** | 2025-03 (16914 → 21913) | External API & Storage (M1, M3) | Schema & Mock (P1-02), S2 API & Profiler (P2-02), Benchmark M1 (P3-02b), Feature Eng (P2-06), HF Exporter (P4-02) |
+| **Trần Ngô Uyên Nhi** | 2025-02/03 (18235 → 1913) | Hierarchical Parser (M2) | Khung Jupyter Book (P1-03), Resolver & Tree Builder (P2-03), Benchmark M2 (P3-03b), Báo cáo M2 (P4-03b), Reviewer parse chung (P3-03a), Benchmark cuối & nộp Moodle (P4-05, cùng Khang) |
+| **Đinh Công Khang** | 2024-11 (3799 → 8798) | Dedup & BibTeX (M2) | Spec LaTeX (P1-04), BibTeX & Dedup (P2-04), Runner `main.py` (P3-01), Chạy parse chung (P3-03a), Benchmark cuối & nộp Moodle (P4-05, cùng Nhi) |
+| **Trần Tuấn Kiệt** | 2024-10 (13025 → 18024) | Machine Learning (M3) | Repo GitHub (P1-01), Spec ML (P1-05), Feature Eng (P2-06), Ranking Model & MRR (P4-01), README spec, Poster (P4-04), Reviewer crawl thật (P3-02a) & gán nhãn (P3-04) |
 
 > ⚠️ **Nhi**: dải ID `18235 → 1913` đi qua hai tháng (2025-02 và 2025-03). Cả nhóm cần thống nhất rõ cách xử lý đoạn "quay vòng" này trước khi chạy crawl để không bị trùng/sót ID.
 
 ### Cơ chế Review chéo
 
-Mỗi task có **1 Owner + 2 Reviewers** (xem bảng task ở mục 5). Owner viết code, 2 Reviewer đọc và Approve PR trước khi merge.
+Mỗi task có **1 Owner + 1 Reviewer** (xem bảng task ở mục 5). Owner viết code, Reviewer đọc và Approve PR trước khi merge.
 
 ---
 
@@ -261,17 +263,19 @@ Mỗi task có **1 Owner + 2 Reviewers** (xem bảng task ở mục 5). Owner vi
 ### 5.2 Timeline tổng quan
 
 ```
-Tuần  12/10 ─ 15/10 : Giai đoạn 1 – Khảo sát, Repo, Schema, Spec
-      14/10 ─ 26/10 : Giai đoạn 2 – Viết module (crawler, parser, ML)
-      26/10 ─ 28/10 : ĐỢT 1 – Mỗi người crawl dải cá nhân (5.000 bài), gom lên Drive
-      29/10 ─ 02/11 : Benchmark Colab M1 + Báo cáo M1  ──► NỘP M1
-      30/10 ─ 06/11 : ĐỢT 2 – Parse chung 25.000 bài
-      07/11 ─ 12/11 : Benchmark Colab M2 + Báo cáo M2  ──► NỘP M2
-      31/10 ─ 08/11 : Gán nhãn dữ liệu
-      08/11 ─ 14/11 : Train model, xuất predictions
-      15/11 ─ 18/11 : Xuất 6 bảng tổng, tách 5 bộ & upload Hugging Face
-      15/11 ─ 20/11 : Thiết kế Poster A2
-      20/11 ─ 22/11 : Kiểm thử cuối + NỘP M3
+12/10 ─ 15/10 : Giai đoạn 1 – Nền móng: P1-00 (Discovery, đến 14/10), P1-01 … P1-05
+14/10 ─ 26/10 : Giai đoạn 2 – Viết module: P2-01 … P2-06
+26/10 ─ 28/10 : P3-01 Runner (Khang) + P3-02a ĐỢT 1 – Mỗi người crawl dải cá nhân (5.000 bài), gom lên Drive
+29/10 ─ 30/10 : P3-02b Benchmark Colab M1 (Bảo)
+30/10 ─ 02/11 : P4-03a Báo cáo M1 (Kiên, reviewer Bảo)  ──► NỘP M1 (≤ 02/11)
+30/10 ─ 06/11 : P3-03a ĐỢT 2 – Parse chung 25.000 bài (Khang, reviewer Nhi)
+31/10 ─ 08/11 : P3-04 Gán nhãn dữ liệu (cả 5 bạn, mỗi bạn ≥ 5 bài thủ công)
+07/11 ─ 08/11 : P3-03b Benchmark Colab M2 (Nhi)
+08/11 ─ 12/11 : P4-03b Báo cáo M2 (Nhi, reviewer Bảo)  ──► NỘP M2 (≤ 12/11): Link Code Repo + Link Jupyter Book M2
+08/11 ─ 14/11 : P4-01 Train model, đo MRR, xuất predictions (Kiệt)
+15/11 ─ 18/11 : P4-02 Xuất 6 bảng tổng, tách 5 bộ & upload Hugging Face (Bảo)
+15/11 ─ 20/11 : P4-04 Thiết kế Poster A2 (Kiên & Kiệt)
+20/11 ─ 22/11 : P4-05 Kiểm thử cuối + NỘP M3 (Nhi & Khang)
 ```
 
 ### 5.3 Danh sách 24 task
@@ -282,12 +286,14 @@ Tuần  12/10 ─ 15/10 : Giai đoạn 1 – Khảo sát, Repo, Schema, Spec
 
 | ID | Task | Owner | Reviewer | Thời gian | Phụ thuộc |
 |---|---|---|---|---|---|
-| P1-00 | Khảo sát Discovery & phương pháp crawl | Kiên | Bảo | 12/10 – 14/10 | – |
+| P1-00 | Discovery: resolve ID được giao qua API (`id_list`) & tìm đủ mọi version | Kiên | Bảo | 12/10 – 14/10 | – |
 | P1-01 | Tạo repo GitHub & khung dự án | Kiệt | Khang | 12/10 – 13/10 | – |
 | P1-02 | Data Schema & Mock Generator | Bảo | Kiệt | 12/10 – 15/10 | – |
 | P1-03 | Khung Jupyter Book (repo riêng) | Nhi | Khang | 12/10 – 15/10 | – |
 | P1-04 | Khảo sát LaTeX & Spec Tree | Khang | Nhi | 12/10 – 15/10 | – |
 | P1-05 | Thiết kế kiến trúc ML & Predictions Spec | Kiệt | Bảo | 12/10 – 15/10 | – |
+
+> 📌 **P1-00:** arXiv API / OAI-PMH / Kaggle chỉ là "toolbox", **không phải việc phải so sánh để chọn**. Phần được chấm: chạy script resolve ID trong dải được giao qua API (`id_list`), xác định chính xác số version (v1 … vN) của từng bài, trích `v1_date`, `latest_version_date` + metadata cơ bản, và **đo tổng thời gian discovery** cho báo cáo M1 (`docs/discovery_report.md`).
 
 #### Giai đoạn 2 – Viết module (14/10 → 26/10)
 
@@ -305,22 +311,22 @@ Tuần  12/10 ─ 15/10 : Giai đoạn 1 – Khảo sát, Repo, Schema, Spec
 | ID | Task | Owner | Reviewer | Thời gian | Phụ thuộc |
 |---|---|---|---|---|---|
 | P3-01 | Đóng gói Pipeline Runner (`main.py`) | Khang | Kiên | 26/10 – 28/10 | P2-01..05 |
-| P3-02a | **Crawl thật M1** (mỗi người 5.000 bài trên dải cá nhân, gom lên Drive; tổng 25.000 bài) | Cả 5 | Kiên, Bảo | 26/10 – 28/10 | P2-01, P2-02 |
+| P3-02a | **Crawl thật M1** (mỗi người 5.000 bài trên dải cá nhân, gom lên Drive; tổng 25.000 bài) | Cả 5 | Kiệt | 26/10 – 28/10 | P2-01, P2-02 |
 | P3-02b | Colab Benchmark M1 & Summary Export | Bảo | Kiên | 29/10 – 30/10 | P3-02a |
 | P3-03a | **Parse chung M2** (25.000 bài, chạy tập trung) | Khang | Nhi | 30/10 – 06/11 | P3-01, P3-02a |
 | P3-03b | Colab Benchmark M2 & Parse Summary | Nhi | Khang | 07/11 – 08/11 | P3-03a |
-| P3-04 | Gán nhãn Reference Matching (cả 5 cùng gán) | Cả 5 | Kiệt | 31/10 – 08/11 | P1-05, P1-02, P3-03a |
+| P3-04 | Gán nhãn Reference Matching (cả 5 cùng gán, **mỗi bạn ≥ 5 bài thủ công**) | Cả 5 | Kiệt | 31/10 – 08/11 | P1-05, P1-02, P3-03a |
 
 #### Giai đoạn 4 – Báo cáo, ML, Hugging Face, Poster
 
 | ID | Task | Owner | Reviewer | Thời gian | Phụ thuộc |
 |---|---|---|---|---|---|
-| P4-03a | Báo cáo Jupyter Book M1 & README update | Kiên & Bảo | Nhi | 30/10 – 02/11 | P3-02b |
-| P4-03b | Báo cáo Jupyter Book M2 | Nhi & Khang | Bảo | 08/11 – 12/11 | P3-03b |
+| P4-03a | Báo cáo Jupyter Book M1 & README update (nộp ≤ 02/11) | Kiên | Bảo | 30/10 – 02/11 | P3-02b |
+| P4-03b | Báo cáo Jupyter Book M2 (nộp ≤ 12/11) | Nhi | Bảo | 08/11 – 12/11 | P3-03b |
 | P4-01 | Huấn luyện model & đo MRR Top-5 | Kiệt | Bảo | 08/11 – 14/11 | P2-06, P3-04, P3-03a |
 | P4-02 | Xuất 6 bảng Parquet tổng, tách 5 bộ theo dải ID & upload Hugging Face cá nhân | Bảo | Kiên | 15/11 – 18/11 | P3-03a, P4-01 |
-| P4-04 | Thiết kế Poster A2 & Documentation | Kiên & Kiệt | Bảo | 15/11 – 20/11 | P4-01, P4-03b |
-| P4-05 | Benchmark cuối & nộp Moodle | Cả 5 | Kiên | 20/11 – 22/11 | P4-01..04 |
+| P4-04 | Thiết kế Poster A2 & Documentation | Kiên & Kiệt | Nhi | 15/11 – 20/11 | P4-01, P4-03b |
+| P4-05 | Benchmark cuối & nộp Moodle | Nhi & Khang | Kiên | 20/11 – 22/11 | P4-01..04 |
 
 > 💡 **Cột "Phụ thuộc"** nghĩa là: task này chỉ bắt đầu đầy đủ khi các task trong cột đó đã xong.
 
@@ -329,7 +335,7 @@ Tuần  12/10 ─ 15/10 : Giai đoạn 1 – Khảo sát, Repo, Schema, Spec
 | Milestone | Nộp gì |
 |---|---|
 | M1 | Link Code Repo (không có data) + Link Book Repo riêng + báo cáo M1 |
-| M2 | Link báo cáo Jupyter Book M2 |
+| M2 | Link Code Repo + Link báo cáo Jupyter Book M2 |
 | M3 | Poster A2 `.pptx` (420 × 594 mm, dọc) + Link Hugging Face (5 dataset cá nhân, mỗi thành viên 1 link ~5.000 bài) + Link Code Repo |
 
 ---
@@ -350,7 +356,7 @@ main  ●───────●──────────●────�
 ```
 
 - `main` là nhánh **ổn định**: luôn cài được, `pytest` luôn xanh. **Không ai push trực tiếp.**
-- Mọi thay đổi đi theo chu trình: **tạo nhánh → commit → push → Pull Request → 2 Approve + CI xanh → merge → xóa nhánh**.
+- Mọi thay đổi đi theo chu trình: **tạo nhánh → commit → push → Pull Request → 1 Approve + CI xanh → merge → xóa nhánh**.
 - Mỗi task trong bảng ở mục 5 tương ứng **một nhánh** và **một PR**.
 
 ### 6.3 Quy tắc đặt tên nhánh
@@ -393,8 +399,8 @@ git merge origin/main
 # 5. Đẩy nhánh lên GitHub
 git push -u origin feature/P2-01-crawler
 
-# 6. Mở Pull Request trên GitHub → gán đúng 2 Reviewers theo bảng task
-# 7. Sửa theo góp ý (commit thêm vào cùng nhánh) → đủ 2 Approve + CI xanh thì Merge
+# 6. Mở Pull Request trên GitHub → gán đúng Reviewer theo bảng task
+# 7. Sửa theo góp ý (commit thêm vào cùng nhánh) → đủ 1 Approve + CI xanh thì Merge
 # 8. Sau khi merge: xóa nhánh và cập nhật main
 git checkout main
 git pull origin main
@@ -432,10 +438,10 @@ Cú pháp: `<TASK-ID> <loại>: <mô tả ngắn, thể mệnh lệnh>`
 - **Tiêu đề PR:** `<TASK-ID>: <tên task>` (ví dụ `P2-01: Module crawling arXiv`).
 - **Mô tả PR** theo mẫu `.github/pull_request_template.md`: làm gì, cách kiểm tra, tài liệu tham khảo (citation).
 - **Kích thước:** nên dưới ~400 dòng thay đổi; PR quá lớn thì tách nhỏ để dễ review.
-- **Gán đúng 2 Reviewers** theo cột "Reviewers" trong bảng task.
+- **Gán đúng Reviewer** theo cột "Reviewer" trong bảng task.
 - Mở **Draft PR** nếu muốn nhận góp ý sớm khi code chưa xong.
 - **Điều kiện merge** (bắt buộc cả ba):
-  1. Đủ **2 Approve** từ đúng 2 Reviewers.
+  1. Đủ **1 Approve** từ đúng Reviewer của task.
   2. **CI xanh** (`ruff` + `pytest`).
   3. Đã **giải quyết hết comment** và nhánh không còn conflict với `main`.
 - Dùng **Squash and merge** để mỗi task chỉ còn **một commit gọn** trên `main`; commit message khi squash giữ dạng `P2-01 feat: ...`.
@@ -549,7 +555,7 @@ Dùng **kiểu Google**. Hàm/class public bắt buộc có docstring: dòng tó
 
 ```python
 def crawl_paper(arxiv_id: str, out_dir: Path) -> bool:
-    """Tải mọi phiên bản (v1, v2, ...) của một bài báo và xóa file ảnh.
+    """Tải mọi phiên bản (v1, v2, ...) của một bài báo, chỉ giữ file .tex/.bib (không lưu ảnh).
 
     Args:
         arxiv_id: Mã arXiv chuẩn, ví dụ "2506.00788".
@@ -674,7 +680,7 @@ logger.info("Crawl xong %s (%d phiên bản)", arxiv_id, n_versions)   # dùng %
 | Mỗi task một nhánh `feature/<TASK-ID>-...` | Push thẳng lên `main` |
 | Tên nhánh chữ thường, gạch ngang, có TASK-ID | Đặt tên theo người (`kien-branch`) hoặc mơ hồ (`test`) |
 | Commit dạng `P2-01 feat: ...` | Commit "update", "fix", "done" |
-| PR đủ **2 Approve + CI xanh** mới merge | Tự merge khi chưa đủ duyệt |
+| PR đủ **1 Approve + CI xanh** mới merge | Tự merge khi chưa đủ duyệt |
 | Merge `origin/main` vào nhánh trước khi mở PR | Để nhánh lệch `main` hàng tuần |
 | Chạy `ruff` và `pytest` trước khi push | Commit khi test đang đỏ |
 | Ghi citation khi tham khảo code/tài liệu | Chép code không dẫn nguồn |
@@ -728,21 +734,36 @@ time.sleep(3)  # BẮT BUỘC ≥ 3 giây
 
 ```python
 url = "https://api.semanticscholar.org/graph/v1/paper/arXiv:2506.00788/references"
-params = {"fields": "title,externalIds", "limit": 1000}
+params = {
+    "fields": "paperId,title,externalIds,authors,year,publicationDate,venue",
+    "limit": 1000,
+}
 resp = requests.get(url, params=params, headers={"x-api-key": S2_API_KEY})
 ```
 
+Các field S2 cần lấy và nơi dùng:
+
+| Field S2 | Dùng cho | Ghi chú |
+|---|---|---|
+| `paperId` | `ref_s2_id` | ID của tham khảo trên S2 |
+| `authors` | `ref_authors` | Danh sách tên tác giả (`list[str]`) |
+| `publicationDate` | `ref_submission_date` | Có thể null |
+| `externalIds.ArXiv` | Điều kiện lọc | Chỉ ref có trường này mới thành dòng bảng `references` khi xuất Parquet |
+| `title`, `year`, `venue` | Lưu trong `references.json` | Tên cột cuối cùng theo `src/schemas.py` |
+
 > 📎 Kiểm tra lại tên field và giới hạn tại tài liệu chính thức của S2 trước khi code, vì API có thể thay đổi.
 
-#### Discovery – 3 phương pháp cần so sánh (P1-00)
+#### Discovery – resolve ID & tìm mọi version (P1-00)
 
-| Phương pháp | Mô tả ngắn |
+Phần được chấm: resolve các ID được giao qua **arXiv API (`id_list`)** và tìm **đủ mọi version** (v1 … vN) của từng bài. Ba nguồn dưới đây chỉ là **"toolbox"** tham khảo, nhóm **không cần so sánh để chọn**:
+
+| Nguồn | Vai trò |
 |---|---|
-| **arXiv API (batch ID)** | Truy vấn trực tiếp theo danh sách ID |
-| **OAI-PMH** (qua `sickle`) | Giao thức chuẩn thu hoạch metadata hàng loạt |
-| **Kaggle dataset** | Tải dataset arXiv có sẵn |
+| **arXiv API (`id_list`)** (thư viện `arxiv`, `export.arxiv.org/api/query`) | Dùng để resolve ID được giao; vẫn giữ delay ≥ 3 giây |
+| **OAI-PMH** (qua `sickle`) | Tùy chọn, tham khảo khi cần thu hoạch metadata hàng loạt |
+| **Kaggle dataset** | Tùy chọn, tham khảo khi cần đối chiếu metadata |
 
-Kết quả so sánh, lý do chọn và thời gian đo được ghi trong `docs/discovery_report.md`.
+Đầu ra của P1-00: số version của từng bài, `v1_date`, `latest_version_date`, metadata cơ bản và **tổng thời gian discovery** (đưa vào báo cáo M1), ghi trong `docs/discovery_report.md`.
 
 #### Hugging Face Hub
 
@@ -752,10 +773,11 @@ Dùng `huggingface_hub` để upload 6 bảng Parquet và Dataset Card. Bộ t�
 
 | Module | Hàm chính | Chức năng |
 |---|---|---|
+| `m1_crawling.discovery` | `discover_ids(id_list)` | Resolve ID qua API, liệt kê mọi version, đo thời gian discovery |
 | `m1_crawling.crawler` | `crawl_paper(arxiv_id, out_dir)` | Tải & xử lý 1 bài (mọi version) |
 | | `crawl_range(id_start, id_end, out_dir, resume)` | Crawl cả dải ID, có checkpoint |
-| `m1_crawling.s2_api` | `fetch_references(arxiv_id)` | Lấy `references.json` |
-| `m1_crawling.profiler` | `Profiler` (context manager) | Đo RAM đỉnh, time/bài, đĩa |
+| `m1_crawling.s2_api` | `fetch_references(arxiv_id)` | Lấy `references.json` (kèm `paperId`, `authors`, `year`, `publicationDate`, `venue`) |
+| `m1_crawling.profiler` | `Profiler` (context manager) | Đo RAM đỉnh & **RAM trung bình** (lấy mẫu định kỳ), time/bài & thời gian TB/bài, đĩa max, `n_refs` & `n_refs_co_arxiv_id`, **dung lượng output cuối**, **tổng thời gian discovery** |
 | `m2_parsing.latex_parser` | `find_main_tex`, `resolve_includes` | Tìm file chính, ghép `\input` |
 | `m2_parsing.tree_builder` | `build_tree(latex, arxiv_id)` | Dựng `hierarchy.json` |
 | `m2_parsing.latex_cleanup` | `cleanup_latex`, `normalize_math` | Dọn LaTeX, chuẩn hóa toán |
@@ -765,6 +787,8 @@ Dùng `huggingface_hub` để upload 6 bảng Parquet và Dataset Card. Bộ t�
 | `m3_matching.matching_model` | `MatchingModel.fit / .rank` | Huấn luyện & xếp hạng |
 | `m3_matching.evaluate` | `mrr(ranked, truth)` | Tính MRR |
 | `m3_matching.export_parquet` | `export_all(processed_dir, out_dir)` | Xuất 6 bảng tổng (kèm script filter tách 5 bộ theo dải ID) |
+
+**Số liệu báo cáo M1** (P3-02b, benchmark Colab CPU-only trên 50–100 bài mẫu): tỷ lệ crawl thành công; dung lượng TB trước/sau khi chỉ giữ `.tex`/`.bib`; số ref TB/bài; tỷ lệ ref có arXiv ID; RAM đỉnh & TB; đĩa max; dung lượng output cuối; time TB/bài; tổng thời gian discovery.
 
 > 🚧 Phần lớn hàm đang là **khung (stub)**, mỗi owner hiện thực theo task của mình. Chữ ký hàm có thể điều chỉnh khi code, nhưng **schema trong `src/schemas.py` phải ổn định** (xem IDD).
 
@@ -901,7 +925,7 @@ pytest -q
 
 1. **Đợt 1 (Crawl riêng M1, 26/10 → 28/10):** mỗi người crawl 5.000 bài trên dải ID cá nhân, rồi gom toàn bộ kết quả (mã nguồn + `references.json`) lên Drive chung. *Crawl source trước, gọi S2 API bổ sung sau.*
 2. **Đợt 2 (Parse chung M2, 30/10 → 06/11):** **đóng băng parser**, rồi đại diện nhóm (Nhi/Khang) chạy parser đồng loạt cho 25.000 bài đã gom trên Drive.
-3. **Đợt 3 (Matching & Upload, 31/10 → 22/11):** gán nhãn thủ công → train mô hình → xuất 6 bảng Parquet tổng. Dùng script cắt (filter) 6 bảng này theo dải ID của từng người để tự nộp lên Hugging Face.
+3. **Đợt 3 (Matching & Upload, 31/10 → 22/11):** gán nhãn thủ công (mỗi người ≥ 5 bài) → train mô hình → xuất 6 bảng Parquet tổng. Dùng script cắt (filter) 6 bảng này theo dải ID của từng người để tự nộp lên Hugging Face.
 
 > ⚠️ Chạy thật tốn thời gian (delay ≥ 3s/request × nhiều version × 5.000 bài/người). **Hãy chạy thử 5-10 bài trước**, rồi mới chạy cả dải.
 
@@ -984,7 +1008,7 @@ def test_mrr():
 
 ### 13.3 Gán nhãn & chia tập (M3)
 
-- **Gán tay:** ≥ 5 bài (mỗi bài ≥ 20 BibTeX entry, tổng ≥ 100 entry gán nhãn), dựa trên parse đợt đầu M2. Mỗi thành viên gán ≥ 1 bài.
+- **Gán tay:** mỗi thành viên gán thủ công **≥ 5 bài** (cả nhóm ≥ 25 bài), mỗi bài ≥ 20 BibTeX entry, dựa trên parse đợt đầu M2.
 - **Gán tự động:** ≥ 10% phần còn lại.
 - **Chia tập:** Test = 1 bài tay + 1 bài tự động; Valid = 1 tay + 1 tự động; Train = phần còn lại. *(Làm nhãn Train/Valid trước để có thể train sớm.)*
 - Spec nhãn chi tiết được tài liệu hóa trong mục dưới (cập nhật bởi Kiệt, P1-05/P4-04).
@@ -1015,6 +1039,8 @@ def test_mrr():
 
 `papers` · `references` · `elements` · `hierarchy` · `bibtex` · `predictions`
 
+Bảng `references` có các cột lấy từ S2: `ref_s2_id` (`paperId`), `ref_authors` (`authors`), `ref_submission_date` (`publicationDate`); chỉ ref có `externalIds.ArXiv` mới thành dòng (tên cột chính thức theo `src/schemas.py`).
+
 Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`README.md` với YAML configs).
 
 ---
@@ -1034,7 +1060,7 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 | Chạy dở bị ngắt | Mất mạng, tắt máy | Chạy lại cùng lệnh (Resume); chỉ thêm `--no_resume` khi muốn làm lại từ đầu |
 | `git push` bị từ chối do file lớn | Lỡ `git add` data thật | `git rm --cached <file>`, kiểm tra `.gitignore`, commit lại. Nếu đã push, báo cả nhóm để xử lý lịch sử |
 | Lỡ commit `.env` / API key | Thiếu cẩn thận | **Revoke key ngay**, tạo key mới, xóa file khỏi lịch sử Git |
-| PR không merge được | Chưa đủ 2 Approve / CI đỏ | Nhắc Reviewer; xem log CI, sửa lỗi `ruff`/`pytest` |
+| PR không merge được | Chưa đủ Approve / CI đỏ | Nhắc Reviewer; xem log CI, sửa lỗi `ruff`/`pytest` |
 | Merge conflict | Hai người sửa cùng file | `git pull origin main` vào nhánh của bạn, sửa chỗ xung đột, commit lại. Chia file theo module để giảm xung đột |
 | Hết RAM/đĩa khi chạy dải lớn | Giữ cả dải trong bộ nhớ, không dọn file tạm | Xử lý từng bài rồi ghi ra đĩa; dọn file tạm; theo dõi bằng Profiler |
 | Colab chạy chậm/khác máy local | Colab CPU-only | Benchmark chuẩn của đề là **Colab CPU-only**; đo trên 50–100 bài mẫu |
@@ -1050,7 +1076,7 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 
 - 📌 **Được phép** tham khảo tài liệu online, nhưng **bắt buộc** ghi citation đầy đủ trong **code** (docstring/comment) **và báo cáo**.
 - 🧠 Dữ liệu và mô hình phải do **chính nhóm tự triển khai và giải thích**; mỗi thành viên phải hiểu phần của mình để bảo vệ.
-- 👥 Mỗi thành viên tự crawl dải ID cá nhân; phần parse chạy **tập trung** cho cả 25.000 bài; cả 5 thành viên đều tham gia gán nhãn thủ công và tự upload bộ Hugging Face theo dải ID cá nhân.
+- 👥 Mỗi thành viên tự crawl dải ID cá nhân; phần parse chạy **tập trung** cho cả 25.000 bài; cả 5 thành viên đều gán nhãn thủ công (≥ 5 bài/người) và tự upload bộ Hugging Face theo dải ID cá nhân.
 
 **Mẫu citation trong code:**
 ```python
@@ -1065,7 +1091,7 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 1. **Tôn trọng arXiv:** vi phạm giới hạn truy cập có thể bị **chặn IP** (ảnh hưởng cả nhóm nếu chung mạng). Luôn có delay và User-Agent.
 2. **Cleanup trước, Dedup sau:** nếu đảo thứ tự, so khớp nội dung giữa các version sẽ sai vì định dạng LaTeX khác nhau.
 3. **Đóng băng parser** trước khi chạy parse thật 25.000 bài; không sửa logic giữa chừng để kết quả nhất quán.
-4. **Xóa ảnh nhưng giữ `\begin{figure}`:** chỉ bỏ file ảnh (giảm dung lượng), **không** xóa lệnh figure trong `.tex`.
+4. **Chỉ extract `.tex` và `.bib`:** file ảnh không bao giờ vào corpus (giảm dung lượng); **giữ nguyên** `\begin{figure}` và `\includegraphics` trong `.tex`.
 5. **Bài PDF/Word-only:** không bỏ qua, mà **giữ record rỗng** và ghi log.
 6. **Ref không có arXiv ID** được lưu cục bộ trong `references.json`, chỉ lọc lấy các ref có arXiv ID khi xuất bảng `references` Parquet.
 7. **Làm nhãn Train/Valid trước** để có thể huấn luyện sớm, nhãn Test làm sau.
@@ -1073,7 +1099,10 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 9. **Poster A2 dọc: 420 × 594 mm** (`.pptx`), chừa thời gian in trước khi nộp.
 10. **Hạn nội bộ** sớm hơn hạn Moodle; hãy bám hạn nội bộ để có đệm rủi ro.
 11. **Backup:** data thật chỉ nằm trên Drive/HF, không nằm trong Git; hãy chắc chắn có ít nhất một bản sao lưu.
-12. **Xác nhận lại** cách chia dải ID của Nhi (xem mục 4) và quy ước đặt tên thư mục bài cũ (`hep-th/9901001`).
+12. **Nộp M2:** cả **link Code Repo** và **link báo cáo Jupyter Book M2** (trước 12/11).
+13. **Gán nhãn thủ công:** mỗi bạn ≥ 5 bài (cả nhóm ≥ 25 bài).
+14. **Discovery (P1-00):** chỉ cần resolve ID được giao qua API (`id_list`) và tìm đủ mọi version; OAI-PMH/Kaggle chỉ là tùy chọn.
+15. **Xác nhận lại** cách chia dải ID của Nhi (xem mục 4) và quy ước đặt tên thư mục bài cũ (`hep-th/9901001`).
 
 ---
 
@@ -1084,6 +1113,9 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 | **arXiv** | Kho lưu trữ bài báo khoa học miễn phí (Vật lý, Toán, Khoa học máy tính…) |
 | **arXiv ID** | Mã định danh bài báo, ví dụ `2506.00788` (năm-tháng + số thứ tự) |
 | **Version (v1, v2…)** | Các phiên bản chỉnh sửa của cùng một bài |
+| **Discovery** | Bước xác định các bài (và mọi version của chúng) cần crawl trong dải ID được giao |
+| **`id_list`** | Tham số của arXiv API để truy vấn trực tiếp theo danh sách arXiv ID |
+| **OAI-PMH** | Giao thức chuẩn để thu hoạch metadata hàng loạt (chỉ là công cụ tham khảo trong dự án này) |
 | **LaTeX / `.tex`** | Ngôn ngữ soạn thảo khoa học, dùng lệnh như `\section{...}` để định dạng |
 | **BibTeX / `.bib`** | Định dạng lưu danh sách tài liệu tham khảo |
 | **`\bibitem`** | Một mục tham khảo viết trực tiếp trong LaTeX |
@@ -1124,6 +1156,7 @@ Mỗi bảng ở dạng **phẳng**, chia **shard**, kèm **Dataset Card** (`REA
 
 - Trang môn học: <https://hcmus-cs-ta.github.io/lab-book/intro-ds/>
 - arXiv bulk data access & API terms of use: <https://info.arxiv.org/help/bulk_data.html>
+- arXiv API User Manual: <https://info.arxiv.org/help/api/user-manual.html>
 - Semantic Scholar Academic Graph API: <https://api.semanticscholar.org/api-docs/>
 - Hugging Face Datasets documentation: <https://huggingface.co/docs/datasets>
 - Jupyter Book documentation: <https://jupyterbook.org>
