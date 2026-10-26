@@ -14,6 +14,10 @@ Chay that:      python discovery.py --mode full --ranges ranges.txt --total-ids 
 ranges.txt: moi dong 1 dai "ID_dau ID_cuoi" (dong trong hoac sau dau # bi bo qua). Cac dai khong duoc chong len nhau.
 Che do full co CHECKPOINT/RESUME: sau moi batch API ghi noi tiep vao --out; chay lai CUNG LENH se bo qua ID da co.
   Muon chay lai tu dau: them --fresh (hoac doi --out).
+Va ngay version (SAU khi chay full, khong can Kaggle/API):
+  python discovery.py --mode patch --out data/raw/discovery_25k.jsonl --contact "email"
+  Bai thieu dung 1 version cuoi -> dien tu latest_version_date (0 request); bai thieu >= 2 version -> OAI GetRecord.
+  Chay lai nhieu lan duoc (da va thi bo qua). Ket qua ghi vao --patch-report (mac dinh discovery_patch_result.json).
 (moi co --xxx-yyy deu nhan them dang --xxx_yyy; ID la ID day du YYMM.NNNNN, dai co the di qua nhieu thang)
 """
 import argparse, hashlib, json, math, os, platform, re, shlex, statistics as st, subprocess, sys, time
@@ -408,7 +412,6 @@ def run_full(a):
         if not isinstance(r.get("authors"), list) or "venue" not in r:
             sys.exit(f"{a.out} la file cu (authors khong phai list / thieu venue). "
                      "Dung --fresh hoac doi --out de chay lai tu dau.")
-    idset = set(ids)
     resumed = [i for i in ids if i in prev]
     outside = len(prev) - len(resumed)
     if outside:
@@ -525,6 +528,132 @@ def run_full(a):
     for w in warnings:
         print("CANH BAO:", w)
     print(f"Bao cao do (kiem tra duoc): {a.report}")
+
+# ------------------------------------------------------------------ MODE PATCH
+def oai_version_dates(sk, aid, retries=3):
+    """OAI GetRecord (arXivRaw) -> {'v1': ISO8601 UTC, 'v2': ...} theo dung thu tu version.
+    Loi mang/parse -> thu lai toi da `retries` lan, het luot thi nem Exception."""
+    import xml.etree.ElementTree as ET
+    ns = "{http://arxiv.org/OAI/arXivRaw/}"
+    last = None
+    for k in range(retries):
+        try:
+            rec = sk.GetRecord(identifier=f"oai:arXiv.org:{aid}", metadataPrefix="arXivRaw")
+            root = ET.fromstring(rec.raw)
+            out = {}
+            for v in root.iter(f"{ns}version"):
+                d = v.find(f"{ns}date")
+                if d is None or not d.text:
+                    raise ValueError("version khong co <date>")
+                out[v.get("version")] = iso_utc(d.text.strip())
+            if not out:
+                raise ValueError("khong co <version>")
+            return out
+        except Exception as ex:
+            last = ex
+            time.sleep(DELAY * (k + 1))
+    raise RuntimeError(f"OAI GetRecord {aid} that bai sau {retries} lan: {last}")
+
+def run_patch(a):
+    """Va version_dates tren file jsonl CO SAN (khong quet Kaggle, khong goi lai API):
+      - thieu dung 1 version (version cuoi) -> v{n} = latest_version_date (API la chuan, 0 request)
+      - thieu >= 2 version -> OAI GetRecord lay ngay moi version
+    Ghi lai --out (atomic). Chay lai an toan: dong da du version bi bo qua."""
+    if not os.path.exists(a.out):
+        sys.exit(f"Khong thay file: {a.out}")
+    rows = load_jsonl(a.out)
+    if not rows:
+        sys.exit(f"{a.out} rong.")
+    print(f"--- VA version_dates: {a.out} ({len(rows)} bai) ---")
+    t0 = time.perf_counter()
+    sha_before = sha256_file(a.out)
+    free, via_oai, anomalies = [], [], []
+    for aid, r in rows.items():
+        n, vd = r["n_versions"], r["version_dates"]
+        if len(vd) == n:
+            continue
+        if len(vd) == n - 1 and list(vd) == [f"v{i}" for i in range(1, n)]:
+            free.append(aid)
+        elif len(vd) < n - 1:
+            via_oai.append(aid)
+        else:
+            anomalies.append(aid)                       # vd nhieu hon n_versions / khoa bat thuong: khong tu dong va
+    print(f"   Can va: {len(free)} bai (dien tu latest_version_date), {len(via_oai)} bai (OAI GetRecord); "
+          f"bat thuong: {len(anomalies)}", flush=True)
+    if not (free or via_oai or anomalies):
+        print("   Khong co bai nao can va (file da du version_dates). Khong sua file va khong ghi bao cao.")
+        return
+
+    for aid in free:
+        r = rows[aid]
+        r["version_dates"][f"v{r['n_versions']}"] = r["latest_version_date"]
+
+    failed, oai_conflict, oai_req_s = [], [], []
+    if via_oai:
+        from sickle import Sickle
+        ua = f"DS-Project-HCMUS-arXiv-crawler/0.1 (student project; contact: {a.contact})"
+        sk = Sickle(OAI_URL, headers={"User-Agent": ua}, max_retries=3)
+        for k, aid in enumerate(via_oai):
+            r = rows[aid]
+            n = r["n_versions"]
+            t1 = time.perf_counter()
+            try:
+                got = oai_version_dates(sk, aid)
+            except RuntimeError as ex:
+                print("   LOI:", ex, flush=True)
+                failed.append(aid)
+                got = None
+            oai_req_s.append(time.perf_counter() - t1)
+            if got is not None:
+                if list(got) != [f"v{i}" for i in range(1, n + 1)]:
+                    print(f"   {aid}: OAI tra {list(got)} khong khop n_versions={n} -> bo qua", flush=True)
+                    failed.append(aid)
+                else:
+                    # ngay Kaggle da co phai trung OAI; neu khong trung thi ghi lai, lay OAI
+                    if any(got[v] != d for v, d in r["version_dates"].items()):
+                        oai_conflict.append(aid)
+                    if got[f"v{n}"] != r["latest_version_date"]:
+                        oai_conflict.append(aid)
+                    r["version_dates"] = got
+                    print(f"   [{k + 1}/{len(via_oai)}] {aid}: da va {n} version", flush=True)
+            if k < len(via_oai) - 1:
+                time.sleep(DELAY)
+
+    write_jsonl(a.out, list(rows.values()))
+    sha_after = sha256_file(a.out)
+    still = [aid for aid, r in rows.items() if len(r["version_dates"]) != r["n_versions"]]
+    last_ok = sum(1 for r in rows.values()
+                  if r["version_dates"].get(f"v{r['n_versions']}") == r["latest_version_date"])
+    v1_ok = sum(1 for r in rows.values() if r["version_dates"].get("v1") == r["v1_date"])
+    t_total = time.perf_counter() - t0
+    result = {
+        "mode": "patch", "environment": {k: v for k, v in env_info(a).items() if k != "kaggle_file"},
+        "input_out": a.out, "rows": len(rows),
+        "patched": {"from_latest_version_date": len(free), "via_oai": len(via_oai) - len(
+            [x for x in failed if x in via_oai]), "ids_from_latest_version_date": free,
+            "ids_via_oai": [x for x in via_oai if x not in failed]},
+        "oai_requests": {"n": len(oai_req_s), "seconds": round(sum(oai_req_s), 2),
+                         "seconds_stats": stats(oai_req_s) if len(oai_req_s) > 1 else None},
+        "failed": failed, "anomalies": anomalies, "oai_vs_kaggle_or_api_conflict": sorted(set(oai_conflict)),
+        "check_after": {"rows_with_n_versions_dates": len(rows) - len(still), "rows_still_missing": still,
+                        "last_version_date_equals_latest_version_date": last_ok,
+                        "v1_equals_v1_date": v1_ok},
+        "timing_s": round(t_total, 2),
+        "output": {"path": a.out, "sha256_before": sha_before, "sha256_after": sha_after},
+    }
+    with open(a.patch_report, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=1, ensure_ascii=False)
+    print("--- HOAN THANH VA ---")
+    print(f"Da va: {len(free)} bai tu latest_version_date, {len(via_oai) - len(failed)} bai qua OAI "
+          f"({sum(oai_req_s):.1f}s). Con thieu: {len(still)}.")
+    print(f"Du version: {len(rows) - len(still)}/{len(rows)} | v_n == latest_version_date: {last_ok}/{len(rows)} "
+          f"| v1 == v1_date: {v1_ok}/{len(rows)}")
+    if oai_conflict:
+        print("CANH BAO: OAI khac Kaggle/API o:", sorted(set(oai_conflict)))
+    print(f"SHA-256 truoc: {sha_before}\nSHA-256 sau:  {sha_after}")
+    print(f"Bao cao va: {a.patch_report}")
+    if failed or anomalies or still:
+        sys.exit("Con bai chua va duoc (xem bao cao); chay lai cung lenh de thu lai.")
 
 # ------------------------------------------------------------------ MODE BENCHMARK
 def orchestrate(a):
@@ -713,7 +842,7 @@ if __name__ == "__main__":
             if "-" in n[2:]:
                 al.append("--" + n[2:].replace("-", "_"))
         ap.add_argument(*al, **kw)
-    add("--mode", choices=["benchmark", "full"], default="benchmark", help="Che do chay")
+    add("--mode", choices=["benchmark", "full", "patch"], default="benchmark", help="Che do chay")
     add("--ranges", dest="ranges_file", default=None,
         help="(mode full) file nhieu dai ID, moi dong 'ID_dau ID_cuoi'; neu co thi bo qua --id-start/--id-end")
     add("--fresh", action="store_true", help="(mode full) bo checkpoint cu trong --out, chay lai tu dau")
@@ -735,6 +864,7 @@ if __name__ == "__main__":
     add("--ram-limit-mb", type=float, default=6000)
     add("--out", default="data/raw/discovery.jsonl", help="(mode full) file jsonl ban giao cho P2-01")
     add("--report", default="discovery_full_result.json", help="(mode full) file bao cao do thoi gian/doi chieu")
+    add("--patch-report", default="discovery_patch_result.json", help="(mode patch) file bao cao va version_dates")
     add("--worker", default=None, help="(noi bo)")
     a = ap.parse_args()
     if a.ranges_file and not a.worker and a.mode != "full":
@@ -743,6 +873,8 @@ if __name__ == "__main__":
 
     if a.worker:
         run_worker(a)
+    elif a.mode == "patch":
+        run_patch(a)
     elif a.mode == "full":
         if not a.kaggle_json:
             sys.exit("Che do full can cung cap --kaggle-json.")

@@ -143,7 +143,7 @@ Lần chạy toàn dải trước (22/10, 5.000 ID, một dải) cho 857,5 s ≈
 **Hướng lệch: 98/98 bài có Kaggle ít version hơn API** (94 bài ít hơn 1 version, 4 bài ít hơn 2 version), phù hợp với snapshot cũ hơn API. Ở cả 98 bài, các version Kaggle có là `v1…vk` liên tục và ngày `latest_version_date` của API không có trong Kaggle. Hệ quả cho việc vá:
 - **94 bài thiếu đúng 1 version (version cuối):** ngày của version đó là `latest_version_date` của API, điền trực tiếp, **không cần request**.
 - **4 bài thiếu 2 version** (`2502.20105`, `2503.18397`, `2503.21850`, `2506.02914`): thiếu cả version giữa, cần OAI `GetRecord`, 4 × 3,84 s ≈ 15 s.
-- Hiện `version_dates` trong `discovery_25k.jsonl` chưa được vá (mục 6).
+- `version_dates` trong `discovery_25k.jsonl` đã được vá ngày 26/10/2026 bằng `discovery.py --mode patch` (mục 7.3): 94 bài điền từ `latest_version_date`, 4 bài qua OAI `GetRecord` (tổng thời gian 4 request 3,0 s, chưa gồm sleep 3 s giữa các request). Kiểm tra sau khi vá: 25.000/25.000 bài đủ ngày các version, `v_n` trùng `latest_version_date` ở 25.000/25.000 bài, `v1` trùng `v1_date` ở 25.000/25.000 bài.
 
 ### 4.2 Ưu điểm của phương án này
 
@@ -202,7 +202,8 @@ Về thời gian, phương án kết hợp vẫn rẻ hơn OAI một mình cho t
 - [x] Sửa theo review: `authors` là danh sách chuỗi, thêm `venue`, nhận nhiều dải ID, Checkpoint/Resume.
 - [x] Điền **phiên bản dataset** và **ngày cập nhật** của Kaggle snapshot (mục 7.2). Lần chạy 20/10 truyền nguyên văn `Version N` và `2026-MM-DD` nên kết quả chưa có thông tin này.
 - [x] Xác định hướng lệch của 98 ID: 98/98 bài có Kaggle ít version hơn API (94 bài thiếu 1 version, 4 bài thiếu 2 version), phù hợp với snapshot cũ hơn API (mục 4.1).
-- [x] Vá `version_dates` trong `discovery_25k.jsonl`: 94 bài thiếu 1 version điền từ `latest_version_date` (không cần request); 4 bài (`2502.20105`, `2503.18397`, `2503.21850`, `2506.02914`) gọi OAI `GetRecord` (≈ 15 s).
+- [x] Chạy `discovery.py --mode patch` trên `discovery_25k.jsonl` (26/10/2026): 94 bài điền từ `latest_version_date`, 4 bài (`2502.20105`, `2503.18397`, `2503.21850`, `2506.02914`) qua OAI `GetRecord`; còn thiếu 0 bài. SHA-256 sau khi vá ghi ở mục 7.3.
+- [x] Upload `discovery_25k.jsonl`, `discovery_full_result_25k.json` và `discovery_patch_result.json` lên Drive (đề không cho commit file dữ liệu lên GitHub), rồi điền link vào mục 7.3.
 - [ ] Chạy lặp `--mode full` thêm 1–2 lần ở thời điểm khác để có mean ± std của tổng thời gian (đặt `--out` và `--report` khác nhau mỗi lần để không ghi đè). Hai lần chạy toàn dải đã có (22/10 và 25/10, khác số ID) cho thấy thời gian mỗi request chênh khoảng 2 lần. Làm rõ hai điểm chưa giải thích: RAM đỉnh 3.264 MB so với 2.061 MB của benchmark, và ≈ 382 s chưa rõ nguồn ở bước API (mục 2.1).
 
 
@@ -223,7 +224,7 @@ Kết quả lệch API–Kaggle phụ thuộc trực tiếp vào độ cũ của
 | Mục | Giá trị |
 | :--- | :--- |
 | Dataset | Cornell-University/arxiv |
-| File | `arxiv-metadata-oai-snapshot.json` (1,73 GB nén; 5,65 GB sau khi giải nén), đặt ở `data/raw/` |
+| File | `arxiv-metadata-oai-snapshot.json` (1,73 GB nén; 5,61 GB sau khi giải nén), đặt ở `data/raw/` |
 | Phiên bản dataset trên Kaggle | **Version 307** |
 | Ngày cập nhật của phiên bản đó | **11/10/2026** |
 | Ngày tải về | **14/10/2026** (thời điểm sửa file trên máy: 14/10/2026 16:55:21 UTC) |
@@ -248,11 +249,19 @@ py src\m1_crawling\discovery.py --contact "<email>" ^
 
 ```
 py src\m1_crawling\discovery.py --mode full --ranges data\raw\ranges.txt --total-ids 25000 ^
-    --contact "kton61174@gmail.com" --kaggle-json data\raw\arxiv-metadata-oai-snapshot.json ^
+    --contact "<email>" --kaggle-json data\raw\arxiv-metadata-oai-snapshot.json ^
     --out data\raw\discovery_25k.jsonl --report discovery_full_result_25k.json
 ```
 
-  `ranges.txt` có mỗi dòng một dải `ID_dau ID_cuoi` (dòng trống và phần sau `#` bị bỏ qua; các dải không được chồng nhau): 5 dải của nhóm (đầu báo cáo). Có thể chạy một dải bằng `--id-start/--id-end` (ID đầy đủ `YYMM.NNNNN`; các cờ nhận cả dạng gạch nối và gạch dưới). Đầu ra: `data/raw/discovery_25k.jsonl` (interface cho P2-01; SHA-256 `4d8a684db4dac93e5564aceeb7e3e86a9053b38007230438d767f56d4326283e`) và `discovery_full_result_25k.json` (thời gian từng giai đoạn, log từng request, RAM nền/đỉnh, tốc độ, danh sách ID lệch/thiếu, môi trường; email được che). Quy trình: quét Kaggle một lần cho mọi dải → gọi API theo batch 50 (tối đa 4 lần thử mỗi request với backoff; ID thiếu được hỏi lại 1 lần), **ghi nối tiếp vào jsonl sau mỗi batch** (Checkpoint/Resume: lỗi giữa chừng thì chạy lại cùng lệnh, ID đã có bị bỏ qua; `--fresh` để chạy lại từ đầu; file cũ có `authors` dạng chuỗi hoặc thiếu `venue` bị từ chối) → đối chiếu `n_versions` và ngày v1 → ghi file cuối (sắp xếp, không trùng). Thời gian đo bằng `perf_counter()` cho cả tiến trình, **không gồm thời gian tải file Kaggle** (gộp được bằng `--download-seconds`). RAM đỉnh đọc ngay sau bước quét Kaggle (giai đoạn tốn RAM nhất) và cuối chương trình, bằng cùng cách đo ở dưới.
+  `ranges.txt` có mỗi dòng một dải `ID_dau ID_cuoi` (dòng trống và phần sau `#` bị bỏ qua; các dải không được chồng nhau): 5 dải của nhóm (đầu báo cáo). Có thể chạy một dải bằng `--id-start/--id-end` (ID đầy đủ `YYMM.NNNNN`; các cờ nhận cả dạng gạch nối và gạch dưới). Đầu ra: `data/raw/discovery_25k.jsonl` (interface cho P2-01; SHA-256 **trước khi vá** `4d8a684db4dac93e5564aceeb7e3e86a9053b38007230438d767f56d4326283e`; **sau khi vá** `af466beadc46d481a49d21c6538f6bd2718d587c648015b3d5d6b34f92db1c66`) và `discovery_full_result_25k.json` (thời gian từng giai đoạn, log từng request, RAM nền/đỉnh, tốc độ, danh sách ID lệch/thiếu, môi trường; email được che). Quy trình: quét Kaggle một lần cho mọi dải → gọi API theo batch 50 (tối đa 4 lần thử mỗi request với backoff; ID thiếu được hỏi lại 1 lần), **ghi nối tiếp vào jsonl sau mỗi batch** (Checkpoint/Resume: lỗi giữa chừng thì chạy lại cùng lệnh, ID đã có bị bỏ qua; `--fresh` để chạy lại từ đầu; file cũ có `authors` dạng chuỗi hoặc thiếu `venue` bị từ chối) → đối chiếu `n_versions` và ngày v1 → ghi file cuối (sắp xếp, không trùng). Thời gian đo bằng `perf_counter()` cho cả tiến trình, **không gồm thời gian tải file Kaggle** (gộp được bằng `--download-seconds`). RAM đỉnh đọc ngay sau bước quét Kaggle (giai đoạn tốn RAM nhất) và cuối chương trình, bằng cùng cách đo ở dưới.
+- **Vá `version_dates` (chạy sau `--mode full`, không cần Kaggle hay gọi lại API):**
+
+```
+py src\m1_crawling\discovery.py --mode patch --out data\raw\discovery_25k.jsonl --contact "<email>"
+```
+
+  Bài thiếu đúng 1 version (version cuối) được điền từ `latest_version_date` của API, 0 request; bài thiếu từ 2 version trở lên gọi OAI `GetRecord` (arXivRaw), đổi ngày sang ISO 8601 UTC cùng định dạng với `v1_date`. Script ghi đè `--out` (atomic), in SHA-256 trước/sau, ghi `discovery_patch_result.json` và kiểm tra lại: mọi bài có đủ `n_versions` ngày, `v_n` trùng `latest_version_date`, `v1` trùng `v1_date`. Chạy lại được: bài đã đủ version bị bỏ qua.
+- **Lưu trữ file dữ liệu:** đề không cho commit file dữ liệu lên GitHub, nên `discovery_25k.jsonl`, `discovery_full_result_25k.json` và `discovery_patch_result.json` được để trên Drive: `https://drive.google.com/drive/folders/15vwo-J7F5zMuBqvEj06ktTve-mgZ6xhH?usp=sharing`.
 - **Thiết kế đo:** mỗi cặp (phương pháp, lần lặp) chạy trong **một tiến trình riêng** để RAM đỉnh không lẫn giữa các phương pháp. Lặp 3 lần, xen kẽ theo thứ tự api → oai → kaggle → api → … để giảm ảnh hưởng của mạng. Báo cáo mean, median, std, min, max.
 - **Đo thời gian:** `time.perf_counter()` (thời gian thực, wall-clock) bao toàn bộ vòng lặp của worker. Với API và OAI, thời gian **đã gồm** sleep 3 s giữa các request; thời gian riêng từng request được ghi trong `req_seconds`. Với Kaggle, chỉ gồm đọc + lọc, **không gồm tải file** (nhập tay bằng `--download-seconds`).
 - **Ước lượng 5.000 ID:** API = `ceil(5000/50)` request × (thời gian request + 3 s); OAI = 5.000 × (thời gian request + 3 s). Script xuất ba cột: giá trị trung bình, khoảng tin cậy 95% của trung bình (phân phối t, theo số mẫu request) và khoảng [min, max] (kịch bản cực đoan). Khi dưới 10 mẫu request, script in cảnh báo. Khoảng tin cậy chỉ phản ánh dao động trong một phiên đo (xem mục 2.4).
