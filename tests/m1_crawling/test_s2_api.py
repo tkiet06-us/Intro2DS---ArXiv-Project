@@ -7,12 +7,13 @@ from pathlib import Path
 import pytest
 import requests
 
-from src.common.utils_io import read_json
+from src.common.utils_io import read_json, write_json
 from src.m1_crawling.s2_api import (
     S2Client,
     S2Error,
     S2Reference,
     S2Settings,
+    count_saved_references,
     crawl_references,
     fetch_references,
     parse_reference,
@@ -492,3 +493,51 @@ def test_run_s2_stage_marks_invalid_id_as_failed_without_stopping(tmp_path):
 
     assert [r.status for r in results] == ["failed", "done"]
     assert len(session.calls) == 1
+
+
+# ---------- count_saved_references ----------
+
+
+def test_count_saved_references_scans_every_finished_paper(tmp_path):
+    first = {"data": [cited("p1", "1706.03762"), cited("p2"), cited("p3", "1810.04805")]}
+    second = {"data": [cited("p4", "1301.3781")]}
+    client, _, _ = make_client([FakeResponse(200, first), FakeResponse(200, second)])
+    run_s2_stage(["2310.12345", "2401.00001"], tmp_path, client)
+
+    assert count_saved_references(tmp_path) == (2, 4, 3)
+
+
+def test_count_saved_references_is_independent_of_resume(tmp_path):
+    client, _, _ = make_client([FakeResponse(200, {"data": [cited("p1", "1706.03762")]})])
+    run_s2_stage(["2310.12345"], tmp_path, client)
+
+    # Chạy lại: bài bị skipped nhưng thống kê corpus vẫn đủ.
+    run_s2_stage(["2310.12345"], tmp_path, make_client([])[0])
+
+    assert count_saved_references(tmp_path) == (1, 1, 1)
+
+
+def test_count_saved_references_tolerates_missing_all_file_and_unfinished_papers(tmp_path):
+    legacy = tmp_path / "2310-12345"
+    legacy.mkdir()
+    write_json(legacy / "references.json", {"1706-03762": {}, "1810-04805": {}})
+    (tmp_path / "2401-00001").mkdir()  # bài chưa có references.json: không được tính
+
+    assert count_saved_references(tmp_path) == (1, 0, 2)
+
+
+def test_count_saved_references_of_empty_root_is_zero(tmp_path):
+    assert count_saved_references(tmp_path) == (0, 0, 0)
+
+
+def test_run_s2_stage_reports_skipped_papers_with_zero_counts(tmp_path):
+    folder = tmp_path / "2310-12345"
+    write_json(folder / "references.json", {"1706-03762": {}})
+    seen = []
+
+    run_s2_stage(
+        ["2310.12345"], tmp_path, make_client([])[0], on_result=lambda r, s: seen.append(r)
+    )
+
+    # Hợp đồng: on_result nhận cả bài skipped với số đếm 0, bên gọi phải tự lọc.
+    assert [(r.status, r.n_refs, r.n_refs_co_arxiv_id) for r in seen] == [("skipped", 0, 0)]

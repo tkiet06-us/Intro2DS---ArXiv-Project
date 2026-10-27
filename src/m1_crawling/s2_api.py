@@ -27,7 +27,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from src.common.ids import to_folder_name, validate_arxiv_id
-from src.common.utils_io import write_json
+from src.common.utils_io import read_json, write_json
 from src.schemas import Reference
 
 logger = logging.getLogger(__name__)
@@ -318,6 +318,7 @@ def crawl_references(
 
     Returns:
         CrawlResult cho biết bài đã xong, bị bỏ qua hay S2 không có.
+        Nếu muốn thống kê toàn corpus (kể cả bài đã xong từ các lần chạy trước), hãy dùng count_saved_references.
     """
     target = paper_dir / "references.json"
     if resume and target.exists():
@@ -354,6 +355,8 @@ def run_s2_stage(
         root: Thư mục gốc chứa các thư mục bài (tên dạng "yymm-id"), ví dụ data/raw.
         client: Client dùng chung cho cả dải; None thì tạo từ cấu hình mặc định.
         on_result: Hàm gọi sau mỗi bài với (kết quả, số giây xử lý), ví dụ để ghi vào Profiler.
+            Bên gọi cần lọc bài "skipped" trước khi ghi vào Profiler để thời gian trung bình
+            mỗi bài chính xác.
         resume: True thì bỏ qua bài đã có references.json.
 
     Returns:
@@ -373,3 +376,26 @@ def run_s2_stage(
         if on_result is not None:
             on_result(result, time.perf_counter() - started)
     return results
+
+
+def count_saved_references(root: Path) -> tuple[int, int, int]:
+    """Đếm số liệu reference của toàn corpus bằng cách quét các file đã lưu.
+
+    Dùng cho thống kê trong báo cáo (số ref trung bình mỗi bài, tỉ lệ ref có arXiv ID). Số
+    này không phụ thuộc lịch sử chạy hay Resume, khác với CrawlResult chỉ mô tả MỘT lần gọi.
+
+    Args:
+        root: Thư mục gốc chứa các thư mục bài, ví dụ data/raw.
+
+    Returns:
+        (số bài đã có references.json, tổng số ref, tổng số ref có arXiv ID). Bài thiếu
+        references_all.json (dữ liệu cũ) chỉ góp vào số bài và số ref có arXiv ID.
+    """
+    n_papers = n_refs = n_arxiv = 0
+    for by_arxiv_file in sorted(root.glob("*/references.json")):
+        n_papers += 1
+        n_arxiv += len(read_json(by_arxiv_file))
+        all_file = by_arxiv_file.parent / "references_all.json"
+        if all_file.exists():
+            n_refs += len(read_json(all_file))
+    return n_papers, n_refs, n_arxiv
