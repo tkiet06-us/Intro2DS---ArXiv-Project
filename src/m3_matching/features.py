@@ -30,7 +30,7 @@ from src.schemas import Bibtex, Reference
 # Thứ tự cột của vector đặc trưng. Mô hình và test đều dựa vào thứ tự này.
 FEATURE_NAMES: tuple[str, ...] = (
     "arxiv_id_in_fields",  # ID arXiv của ứng viên xuất hiện trong url/journal/doi/chuỗi thô
-    "title_lev",  # Levenshtein chuẩn hóa trên tiêu đề
+    "title_lev_sim",  # Levenshtein chuẩn hóa trên tiêu đề
     "title_word_jaccard",  # Jaccard trên tập từ của tiêu đề
     "title_char3_jaccard",  # Jaccard trên trigram ký tự của tiêu đề
     "title_token_set",  # rapidfuzz token_set_ratio / 100 (chịu thiếu/thừa từ)

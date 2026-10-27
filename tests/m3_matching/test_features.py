@@ -152,7 +152,7 @@ def test_identical_pair_scores_high_everywhere():
 
     vector = build_features(entry, candidate)
 
-    assert feature(vector, "title_lev") == 1.0
+    assert feature(vector, "title_lev_sim") == 1.0
     assert feature(vector, "title_word_jaccard") == 1.0
     assert feature(vector, "title_token_set") == 1.0
     assert feature(vector, "first_author_match") == 1.0
@@ -165,7 +165,7 @@ def test_missing_data_gives_neutral_values_and_flags():
     vector = build_features(make_entry(), make_candidate())
 
     assert [feature(vector, f) for f in ("has_title", "has_authors", "has_year")] == [0.0] * 3
-    assert feature(vector, "title_lev") == 0.0
+    assert feature(vector, "title_lev_sim") == 0.0
     assert feature(vector, "first_author_match") == 0.0
     assert feature(vector, "year_diff") == 0.5
 
@@ -216,7 +216,7 @@ def test_different_papers_score_lower_than_same_paper():
 
     same_vector, other_vector = build_features(entry, same), build_features(entry, other)
 
-    for name in ("title_lev", "title_word_jaccard", "first_author_match", "year_match"):
+    for name in ("title_lev_sim", "title_word_jaccard", "first_author_match", "year_match"):
         assert feature(same_vector, name) > feature(other_vector, name), name
 
 
