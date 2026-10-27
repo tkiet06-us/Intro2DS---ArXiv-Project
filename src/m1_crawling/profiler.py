@@ -33,6 +33,7 @@ class ProfileSummary(BaseModel):
     wall_seconds: float
     n_papers: int
     avg_seconds_per_paper: float | None
+    avg_wall_seconds_per_paper: float | None
     peak_ram_mb: float
     avg_ram_mb: float
     n_ram_samples: int
@@ -89,7 +90,8 @@ class Profiler:
         self._lock = threading.Lock()
         self._ram: list[int] = []
         self._disk: list[int] = []
-        self._papers: list[tuple[float, int, int]] = []
+        # arxiv_id -> [tổng giây các bước, n_refs, n_refs_co_arxiv_id]
+        self._papers: dict[str, list[float]] = {}
         self._wall = 0.0
         self._start = 0.0
         self._process = psutil.Process()
@@ -136,18 +138,25 @@ class Profiler:
                 self._disk.append(disk)
 
     def record_paper(
-        self, arxiv_id: str, seconds: float, n_refs: int, n_refs_co_arxiv_id: int
+        self, arxiv_id: str, seconds: float, n_refs: int = 0, n_refs_co_arxiv_id: int = 0
     ) -> None:
-        """Ghi số liệu của một bài đã xử lý xong.
+        """Ghi số liệu của một bước xử lý một bài; gọi nhiều lần cho cùng bài thì cộng dồn.
+
+        Khi bước arXiv và bước S2 chạy ở hai luồng, mỗi luồng gọi hàm này cho bài của mình
+        (bước arXiv để n_refs = 0). Thời gian của bài là TỔNG thời gian các bước; còn thời gian
+        thực tế của cả hệ thống nằm ở wall_seconds và avg_wall_seconds_per_paper.
 
         Args:
-            arxiv_id: Bài vừa xử lý (chỉ dùng để log).
-            seconds: Tổng thời gian xử lý bài này.
-            n_refs: Số reference S2 trả về.
-            n_refs_co_arxiv_id: Số reference có arXiv ID.
+            arxiv_id: Bài vừa xử lý.
+            seconds: Thời gian của bước vừa xong.
+            n_refs: Số reference S2 trả về (bước S2).
+            n_refs_co_arxiv_id: Số reference có arXiv ID (bước S2).
         """
         with self._lock:
-            self._papers.append((seconds, n_refs, n_refs_co_arxiv_id))
+            entry = self._papers.setdefault(arxiv_id, [0.0, 0, 0])
+            entry[0] += seconds
+            entry[1] += n_refs
+            entry[2] += n_refs_co_arxiv_id
         logger.info("Đã đo %s: %.2fs, %d refs", arxiv_id, seconds, n_refs)
 
     def summary(self) -> ProfileSummary:
@@ -163,15 +172,18 @@ class Profiler:
                 wall_seconds=self._wall,
                 n_papers=n_papers,
                 avg_seconds_per_paper=(
-                    sum(p[0] for p in self._papers) / n_papers if n_papers else None
+                    sum(p[0] for p in self._papers.values()) / n_papers if n_papers else None
+                ),
+                avg_wall_seconds_per_paper=(
+                    self._wall / n_papers if n_papers and self._wall > 0 else None
                 ),
                 peak_ram_mb=max(self._ram, default=0) / MB,
                 avg_ram_mb=sum(self._ram) / n_samples / MB if n_samples else 0.0,
                 n_ram_samples=n_samples,
                 max_disk_mb=max(self._disk) / MB if self._disk else None,
                 final_disk_mb=self._disk[-1] / MB if self._disk else None,
-                n_refs_total=sum(p[1] for p in self._papers),
-                n_refs_co_arxiv_id_total=sum(p[2] for p in self._papers),
+                n_refs_total=int(sum(p[1] for p in self._papers.values())),
+                n_refs_co_arxiv_id_total=int(sum(p[2] for p in self._papers.values())),
             )
 
     def save(self, path: Path) -> None:

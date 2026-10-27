@@ -16,11 +16,11 @@ import logging
 import math
 import os
 import re
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, Literal, Self
-from urllib.parse import quote
 
 import requests
 import yaml
@@ -92,10 +92,11 @@ class CrawlResult(BaseModel):
         done: gọi S2 và đã ghi file.
         skipped: references.json đã có từ lần chạy trước (Resume); không đọc lại số đếm.
         not_found: S2 không có bài này (khác với bài có mặt nhưng không trích dẫn gì).
+        failed: lỗi sau khi đã thử lại (chỉ do run_s2_stage tạo ra, kèm log lỗi).
     """
 
     arxiv_id: str
-    status: Literal["done", "skipped", "not_found"]
+    status: Literal["done", "skipped", "not_found", "failed"]
     n_refs: int = 0
     n_refs_co_arxiv_id: int = 0
 
@@ -104,6 +105,10 @@ class S2Client:
     """Client gọi S2 có giãn cách giữa các request, retry và backoff.
 
     Mọi request tới S2 PHẢI đi qua get_json để không ai vô tình gọi quá nhanh.
+
+    An toàn khi dùng chung giữa nhiều luồng: khoảng cách giữa hai lần BẮT ĐẦU request luôn
+    >= delay_seconds, bất kể luồng nào gọi. Tuy vậy cách đơn giản nhất vẫn là mỗi nguồn
+    (arXiv, S2) một client riêng và mỗi client chỉ một luồng, vì hai nguồn có giới hạn độc lập.
     """
 
     def __init__(
@@ -129,13 +134,17 @@ class S2Client:
         self._clock = clock
         # -inf để request đầu tiên không bao giờ phải chờ.
         self._last_call = -math.inf
+        self._lock = threading.Lock()
 
     def _wait_turn(self) -> None:
-        # Chỉ ngủ phần còn thiếu: thời gian xử lý giữa hai request cũng được tính vào delay.
-        remaining = self._settings.delay_seconds - (self._clock() - self._last_call)
-        if remaining > 0:
-            self._sleep(remaining)
-        self._last_call = self._clock()
+        # Giữ khóa trong lúc ngủ: luồng đến sau phải xếp hàng, nên hai request không bao giờ
+        # bắt đầu cách nhau ít hơn delay. Chỉ ngủ phần còn thiếu vì thời gian xử lý giữa hai
+        # request cũng được tính vào delay.
+        with self._lock:
+            remaining = self._settings.delay_seconds - (self._clock() - self._last_call)
+            if remaining > 0:
+                self._sleep(remaining)
+            self._last_call = self._clock()
 
     @staticmethod
     def _backoff(attempt: int) -> float:
@@ -221,10 +230,9 @@ def parse_reference(cited: dict[str, Any] | None) -> S2Reference | None:
 
 
 def _references_path(arxiv_id: str) -> str:
-    # Mã hóa dấu "/" của ID cũ ("hep-th/9901001" -> "hep-th%2F9901001") để không bị hiểu
-    # thành thêm một cấp đường dẫn. TODO(Bảo, P2-02): kiểm tra bằng request thật với ID cũ;
-    # nếu S2 trả 404 thì thử bỏ mã hóa (safe=":/").
-    return f"/paper/{quote(f'arXiv:{arxiv_id}', safe=':')}/references"
+    # arxiv_id đã qua validate_arxiv_id nên chỉ chứa chữ, số, ".", "-", "/": giữ nguyên dấu "/"
+    # của ID cũ ("hep-th/9901001"), không cần mã hóa.
+    return f"/paper/arXiv:{arxiv_id}/references"
 
 
 def fetch_references(arxiv_id: str, client: S2Client | None = None) -> list[S2Reference] | None:
@@ -327,3 +335,41 @@ def crawl_references(
     return CrawlResult(
         arxiv_id=arxiv_id, status="done", n_refs=len(refs), n_refs_co_arxiv_id=len(by_arxiv)
     )
+
+
+def run_s2_stage(
+    arxiv_ids: Iterable[str],
+    root: Path,
+    client: S2Client | None = None,
+    on_result: Callable[[CrawlResult, float], None] | None = None,
+    resume: bool = True,
+) -> list[CrawlResult]:
+    """Chạy bước S2 cho cả một dải bài; một bài lỗi không làm sập cả dải.
+
+    Hàm này không phụ thuộc vào bước tải source của arXiv (S2 chỉ cần arxiv_id), nên có thể
+    chạy trong một luồng riêng song song với crawler arXiv mà không vi phạm giới hạn nào.
+
+    Args:
+        arxiv_ids: Các mã arXiv chuẩn (list hay generator đều được).
+        root: Thư mục gốc chứa các thư mục bài (tên dạng "yymm-id"), ví dụ data/raw.
+        client: Client dùng chung cho cả dải; None thì tạo từ cấu hình mặc định.
+        on_result: Hàm gọi sau mỗi bài với (kết quả, số giây xử lý), ví dụ để ghi vào Profiler.
+        resume: True thì bỏ qua bài đã có references.json.
+
+    Returns:
+        Kết quả của từng bài theo thứ tự đầu vào.
+    """
+    client = client or S2Client()
+    results: list[CrawlResult] = []
+    for arxiv_id in arxiv_ids:
+        started = time.perf_counter()
+        try:
+            result = crawl_references(arxiv_id, root / to_folder_name(arxiv_id), client, resume)
+        except (S2Error, requests.RequestException, ValueError):
+            # Chỉ bắt lỗi của riêng bài này (mạng, S2, ID sai); lỗi đĩa hay lỗi code vẫn nổ.
+            logger.exception("Lỗi khi lấy reference của %s", arxiv_id)
+            result = CrawlResult(arxiv_id=arxiv_id, status="failed")
+        results.append(result)
+        if on_result is not None:
+            on_result(result, time.perf_counter() - started)
+    return results

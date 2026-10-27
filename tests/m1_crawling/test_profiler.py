@@ -1,5 +1,6 @@
 """Unit tests cho src/m1_crawling/profiler.py (không phụ thuộc mạng)."""
 
+import threading
 import time
 
 import pytest
@@ -112,3 +113,39 @@ def test_save_writes_readable_json(tmp_path):
     data = read_json(tmp_path / "reports" / "profile.json")
     assert data["n_papers"] == 1
     assert data["max_disk_mb"] is None
+
+
+def test_record_paper_accumulates_steps_of_the_same_paper():
+    with Profiler() as prof:
+        prof.record_paper("2310.12345", seconds=3.0)  # bước arXiv (không có reference)
+        prof.record_paper("2310.12345", seconds=1.0, n_refs=30, n_refs_co_arxiv_id=10)  # bước S2
+
+    summary = prof.summary()
+    assert summary.n_papers == 1
+    assert summary.avg_seconds_per_paper == pytest.approx(4.0)
+    assert (summary.n_refs_total, summary.n_refs_co_arxiv_id_total) == (30, 10)
+
+
+def test_wall_time_per_paper_differs_from_summed_step_time():
+    with Profiler() as prof:
+        time.sleep(0.05)
+        prof.record_paper("2310.12345", seconds=10.0)
+
+    summary = prof.summary()
+    assert summary.avg_seconds_per_paper == pytest.approx(10.0)
+    assert 0 < summary.avg_wall_seconds_per_paper < 10.0
+
+
+def test_record_paper_is_safe_from_several_threads():
+    with Profiler() as prof:
+        threads = [
+            threading.Thread(target=prof.record_paper, args=(f"2310.{i:05d}", 1.0, 2, 1))
+            for i in range(20)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    summary = prof.summary()
+    assert (summary.n_papers, summary.n_refs_total) == (20, 40)

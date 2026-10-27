@@ -1,5 +1,7 @@
 """Unit tests cho src/m1_crawling/s2_api.py (không gọi mạng thật, dùng tests/mock_data)."""
 
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from src.m1_crawling.s2_api import (
     crawl_references,
     fetch_references,
     parse_reference,
+    run_s2_stage,
     to_references_json,
 )
 
@@ -284,12 +287,20 @@ def test_fetch_references_rejects_invalid_id_without_calling_s2():
     assert session.calls == []
 
 
-def test_fetch_references_encodes_slash_of_old_style_id():
+def test_fetch_references_keeps_slash_of_old_style_id():
     client, session, _ = make_client([FakeResponse(200, {"data": []})])
 
     fetch_references("hep-th/9901001", client)
 
-    assert session.calls[0][0].endswith("/paper/arXiv:hep-th%2F9901001/references")
+    assert session.calls[0][0].endswith("/paper/arXiv:hep-th/9901001/references")
+    assert len(session.calls) == 1
+
+
+def test_fetch_references_makes_single_attempt_for_new_style_id_on_404():
+    client, session, _ = make_client([FakeResponse(404)])
+
+    assert fetch_references("2310.12345", client) is None
+    assert len(session.calls) == 1
 
 
 # ---------- to_references_json ----------
@@ -413,3 +424,71 @@ def test_settings_from_real_project_config():
     settings = S2Settings.from_config(Path(__file__).resolve().parents[2] / "configs/config.yaml")
 
     assert settings.delay_seconds >= 1
+
+
+# ---------- thread-safety của S2Client ----------
+
+
+def test_shared_client_keeps_delay_between_threads():
+    delay, n_threads = 0.05, 4
+    session = FakeSession([FakeResponse(200, {})] * n_threads)
+    client = S2Client(S2Settings(delay_seconds=delay, api_key="k"), session=session)
+    threads = [threading.Thread(target=client.get_json, args=("/x", {})) for _ in range(n_threads)]
+
+    started = time.monotonic()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    elapsed = time.monotonic() - started
+
+    # n request liên tiếp phải cách nhau >= delay nên tổng thời gian >= (n - 1) * delay.
+    assert len(session.calls) == n_threads
+    assert elapsed >= (n_threads - 1) * delay - 1e-3
+
+
+# ---------- run_s2_stage ----------
+
+
+def test_run_s2_stage_isolates_failures_and_reports_every_paper(tmp_path):
+    responses = [
+        FakeResponse(200, {"data": [cited("p1", "1706.03762")]}),
+        FakeResponse(400),  # lỗi không thể thử lại: chỉ bài này thất bại
+        FakeResponse(404),
+    ]
+    client, _, _ = make_client(responses)
+    seen = []
+
+    results = run_s2_stage(
+        ["2310.12345", "2401.00001", "2402.99999"],
+        tmp_path,
+        client,
+        on_result=lambda result, seconds: seen.append((result.status, seconds)),
+    )
+
+    assert [r.status for r in results] == ["done", "failed", "not_found"]
+    assert [status for status, _ in seen] == ["done", "failed", "not_found"]
+    assert all(seconds >= 0 for _, seconds in seen)
+    assert (tmp_path / "2310-12345" / "references.json").exists()
+    assert not (tmp_path / "2401-00001").exists()
+
+
+def test_run_s2_stage_accepts_generator_and_resumes(tmp_path):
+    done_dir = tmp_path / "2310-12345"
+    done_dir.mkdir()
+    (done_dir / "references.json").write_text("{}", encoding="utf-8")
+    client, session, _ = make_client([FakeResponse(200, {"data": []})])
+
+    results = run_s2_stage((i for i in ["2310.12345", "2401.00001"]), tmp_path, client)
+
+    assert [r.status for r in results] == ["skipped", "done"]
+    assert len(session.calls) == 1  # bài đã xong không tốn request
+
+
+def test_run_s2_stage_marks_invalid_id_as_failed_without_stopping(tmp_path):
+    client, session, _ = make_client([FakeResponse(200, {"data": []})])
+
+    results = run_s2_stage(["2310-12345", "2401.00001"], tmp_path, client)
+
+    assert [r.status for r in results] == ["failed", "done"]
+    assert len(session.calls) == 1
