@@ -211,6 +211,49 @@ def test_get_json_raises_s2error_after_exhausting_retries():
     assert len(session.calls) == 3
 
 
+class BadJsonResponse(FakeResponse):
+    """Response 200 nhưng thân không phải JSON hợp lệ."""
+
+    def json(self):
+        raise ValueError("Expecting value")
+
+
+def test_get_json_does_not_sleep_after_the_last_attempt():
+    client, _, clock = make_client([FakeResponse(429)] * 3, max_retries=3)
+
+    with pytest.raises(S2Error):
+        client.get_json("/x", {})
+
+    # Chỉ ngủ giữa các lần thử (2s, 4s); không ngủ 8s sau lần thứ ba vì không còn lần nào nữa.
+    assert clock.sleeps == [2.0, 4.0]
+
+
+def test_get_json_does_not_sleep_after_the_last_network_error():
+    client, _, clock = make_client([requests.Timeout(), requests.Timeout()], max_retries=2)
+
+    with pytest.raises(S2Error):
+        client.get_json("/x", {})
+
+    assert clock.sleeps == [2.0]
+
+
+def test_get_json_retries_when_body_is_not_valid_json():
+    client, session, clock = make_client([BadJsonResponse(200), FakeResponse(200, {"ok": 1})])
+
+    assert client.get_json("/x", {}) == {"ok": 1}
+    assert len(session.calls) == 2
+    assert clock.sleeps == [2.0]
+
+
+def test_get_json_raises_s2error_when_body_is_always_invalid_json():
+    client, session, clock = make_client([BadJsonResponse(200)] * 2, max_retries=2)
+
+    with pytest.raises(S2Error, match="JSON hỏng"):
+        client.get_json("/x", {})
+    assert len(session.calls) == 2
+    assert clock.sleeps == [2.0]
+
+
 def test_get_json_enforces_delay_between_requests():
     client, _, clock = make_client([FakeResponse(200, {}), FakeResponse(200, {})], delay=1.0)
 

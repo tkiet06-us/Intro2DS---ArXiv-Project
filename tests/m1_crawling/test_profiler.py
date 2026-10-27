@@ -149,3 +149,72 @@ def test_record_paper_is_safe_from_several_threads():
 
     summary = prof.summary()
     assert (summary.n_papers, summary.n_refs_total) == (20, 40)
+
+
+# ---------- lấy mẫu lỗi không được làm hỏng phép đo ----------
+
+
+def test_disk_sampling_failure_keeps_ram_samples_and_thread_alive(tmp_path, monkeypatch):
+    def broken_dir_size(path):
+        raise OSError("boom")
+
+    monkeypatch.setattr("src.m1_crawling.profiler.dir_size", broken_dir_size)
+
+    with Profiler(watch_dir=tmp_path, interval=0.01, disk_every=1) as prof:
+        time.sleep(0.1)
+
+    summary = prof.summary()
+    assert summary.n_ram_samples >= 3  # luồng nền vẫn lấy mẫu RAM sau các lần đo đĩa lỗi
+    assert summary.n_sample_errors >= 3
+    assert summary.max_disk_mb is None
+
+
+def test_ram_sampling_failure_is_counted_and_later_samples_still_work(monkeypatch):
+    original = Profiler._sample_ram
+    state = {"calls": 0}
+
+    def flaky(self):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RuntimeError("lần đầu lỗi")
+        original(self)
+
+    monkeypatch.setattr(Profiler, "_sample_ram", flaky)
+
+    with Profiler() as prof:
+        pass
+
+    summary = prof.summary()
+    assert summary.n_sample_errors == 1
+    assert summary.n_ram_samples == 1  # mẫu cuối lúc thoát vẫn lấy được
+
+
+def test_sampling_failure_on_exit_does_not_mask_the_real_error(monkeypatch):
+    def always_broken(self):
+        raise RuntimeError("lỗi lấy mẫu")
+
+    monkeypatch.setattr(Profiler, "_sample_ram", always_broken)
+
+    with pytest.raises(ValueError, match="lỗi thật"), Profiler():
+        raise ValueError("lỗi thật")
+
+
+def test_only_first_sampling_error_logs_a_traceback(monkeypatch, caplog):
+    def always_broken(self):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(Profiler, "_sample_ram", always_broken)
+
+    with Profiler(interval=0.01) as prof:
+        time.sleep(0.1)
+
+    with_traceback = [record for record in caplog.records if record.exc_info]
+    assert prof.summary().n_sample_errors >= 3
+    assert len(with_traceback) == 1
+
+
+def test_no_errors_are_reported_in_a_normal_run():
+    with Profiler() as prof:
+        pass
+
+    assert prof.summary().n_sample_errors == 0

@@ -7,13 +7,14 @@ Cách đo (để ghi vào báo cáo, đề yêu cầu đo theo cách kiểm ch�
   đỉnh rất ngắn nên peak chỉ là xấp xỉ; khi benchmark hãy đối chiếu thêm với
   ``/usr/bin/time -v`` (dòng "Maximum resident set size").
 - Thời gian: ``time.perf_counter`` (đo đều, không bị ảnh hưởng khi đồng hồ hệ thống bị chỉnh).
-- Đĩa: tổng kích thước file trong thư mục output (tương đương ``du``), đo thưa hơn RAM vì duyệt
+- Đĩa: tổng kích thước file trong thư mục output (tương đương ``du --apparent-size``), đo thưa hơn RAM vì duyệt
   thư mục tốn kém. Max là mức lớn nhất trong lúc chạy, final là mức ở lần đo cuối.
 """
 
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Self
 
@@ -37,6 +38,7 @@ class ProfileSummary(BaseModel):
     peak_ram_mb: float
     avg_ram_mb: float
     n_ram_samples: int
+    n_sample_errors: int
     max_disk_mb: float | None
     final_disk_mb: float | None
     n_refs_total: int
@@ -92,6 +94,7 @@ class Profiler:
         self._disk: list[int] = []
         # arxiv_id -> [tổng giây các bước, n_refs, n_refs_co_arxiv_id]
         self._papers: dict[str, list[float]] = {}
+        self._n_errors = 0
         self._wall = 0.0
         self._start = 0.0
         self._process = psutil.Process()
@@ -111,8 +114,9 @@ class Profiler:
         self._stop.set()
         if self._thread is not None:
             self._thread.join()
-        self._sample(measure_disk=True)  # mẫu cuối, đồng thời là "final disk"
+        # Chốt thời gian TRƯỚC mẫu cuối để lần duyệt đĩa cuối không bị tính vào wall time.
         self._wall = time.perf_counter() - self._start
+        self._sample(measure_disk=True)  # mẫu cuối, đồng thời là "final disk"
         return False  # không nuốt lỗi của khối with
 
     def _run(self) -> None:
@@ -123,6 +127,30 @@ class Profiler:
             self._sample(measure_disk=tick % self._disk_every == 0)
 
     def _sample(self, measure_disk: bool) -> None:
+        # RAM và đĩa được bảo vệ riêng: đo đĩa lỗi thì vẫn giữ được mẫu RAM của lượt đó.
+        self._guarded(self._sample_ram)
+        if measure_disk and self._watch_dir is not None:
+            self._guarded(self._sample_disk)
+
+    def _guarded(self, step: Callable[[], None]) -> None:
+        """Chạy một bước lấy mẫu; lỗi thì ghi nhận và bỏ qua mẫu đó thay vì giết luồng nền.
+
+        Số lỗi được báo trong ProfileSummary.n_sample_errors để báo cáo biết chất
+        lượng số đo.
+        """
+        try:
+            step()
+        except Exception:
+            with self._lock:
+                self._n_errors += 1
+                n_errors = self._n_errors
+            # Chỉ in traceback đầy đủ lần đầu để một lỗi lặp lại không làm ngập log cả buổi chạy.
+            if n_errors == 1:
+                logger.exception("Lỗi khi lấy mẫu, bỏ qua mẫu này (các lỗi sau chỉ được đếm)")
+            elif n_errors % 100 == 0:
+                logger.warning("Đã có %d lỗi lấy mẫu", n_errors)
+
+    def _sample_ram(self) -> None:
         rss = self._process.memory_info().rss
         # Tính cả process con (tar, subprocess...) để ra tổng RAM của toàn hệ thống.
         for child in self._process.children(recursive=True):
@@ -130,12 +158,14 @@ class Profiler:
                 rss += child.memory_info().rss
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        # Duyệt thư mục ngoài lock để không chặn các luồng khác.
-        disk = dir_size(self._watch_dir) if measure_disk and self._watch_dir else None
         with self._lock:
             self._ram.append(rss)
-            if disk is not None:
-                self._disk.append(disk)
+
+    def _sample_disk(self) -> None:
+        # Duyệt thư mục ngoài lock để không chặn các luồng khác.
+        size = dir_size(self._watch_dir) if self._watch_dir is not None else 0
+        with self._lock:
+            self._disk.append(size)
 
     def record_paper(
         self, arxiv_id: str, seconds: float, n_refs: int = 0, n_refs_co_arxiv_id: int = 0
@@ -180,6 +210,7 @@ class Profiler:
                 peak_ram_mb=max(self._ram, default=0) / MB,
                 avg_ram_mb=sum(self._ram) / n_samples / MB if n_samples else 0.0,
                 n_ram_samples=n_samples,
+                n_sample_errors=self._n_errors,
                 max_disk_mb=max(self._disk) / MB if self._disk else None,
                 final_disk_mb=self._disk[-1] / MB if self._disk else None,
                 n_refs_total=int(sum(p[1] for p in self._papers.values())),

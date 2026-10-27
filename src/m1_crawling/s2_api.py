@@ -169,31 +169,41 @@ class S2Client:
             Dict JSON, hoặc None khi S2 không có dữ liệu (HTTP 404).
 
         Raises:
-            S2Error: Khi vẫn gặp lỗi tạm thời (429, 5xx, timeout) sau max_retries lần.
+            S2Error: Khi vẫn gặp lỗi tạm thời (429, 5xx, timeout, JSON hỏng) sau max_retries lần.
             requests.HTTPError: Với lỗi không thể thử lại (400, 401, 403...).
         """
         headers = {"x-api-key": self._api_key} if self._api_key else {}
         url = f"{self._settings.base_url}{path}"
-        for attempt in range(1, self._settings.max_retries + 1):
+        max_retries = self._settings.max_retries
+        for attempt in range(1, max_retries + 1):
             self._wait_turn()
             try:
                 response = self._session.get(
                     url, params=params, headers=headers, timeout=self._settings.timeout
                 )
             except (requests.Timeout, requests.ConnectionError):
-                logger.warning("Lỗi mạng khi gọi %s (lần %d)", path, attempt)
-                self._sleep(self._backoff(attempt))
-                continue
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code == 404:
-                return None
-            if response.status_code in RETRY_STATUS:
-                logger.warning("S2 trả %d cho %s (lần %d)", response.status_code, path, attempt)
-                self._sleep(self._retry_wait(response, attempt))
-                continue
-            response.raise_for_status()  # 400/401/403: thử lại cũng vô ích
-        raise S2Error(f"Hết {self._settings.max_retries} lần thử: {path}")
+                reason, wait = "lỗi mạng", self._backoff(attempt)
+            else:
+                status = response.status_code
+                if status == 200:
+                    try:
+                        return response.json()
+                    except ValueError:
+                        # 200 nhưng thân phản hồi hỏng (bị cắt, trang lỗi HTML của proxy...).
+                        reason, wait = "JSON hỏng", self._backoff(attempt)
+                elif status == 404:
+                    return None
+                elif status in RETRY_STATUS:
+                    reason, wait = f"HTTP {status}", self._retry_wait(response, attempt)
+                else:
+                    response.raise_for_status()  # 400/401/403: thử lại cũng vô ích
+                    # Mã bất thường dưới 400 (hiếm): coi là tạm thời và thử lại.
+                    reason, wait = f"HTTP {status} bất thường", self._backoff(attempt)
+            logger.warning("%s khi gọi %s (lần %d/%d)", reason, path, attempt, max_retries)
+            # Lần cuối thì không ngủ nữa: ngủ xong cũng chẳng còn lần thử nào.
+            if attempt < max_retries:
+                self._sleep(wait)
+        raise S2Error(f"Hết {max_retries} lần thử ({reason}): {path}")
 
 
 def parse_reference(cited: dict[str, Any] | None) -> S2Reference | None:
