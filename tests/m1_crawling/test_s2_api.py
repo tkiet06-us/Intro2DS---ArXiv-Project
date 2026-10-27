@@ -9,13 +9,17 @@ import requests
 
 from src.common.utils_io import read_json, write_json
 from src.m1_crawling.s2_api import (
+    BATCH_SIZE,
     S2Client,
     S2Error,
     S2Reference,
     S2Settings,
+    _parse_batch_reference,
     count_saved_references,
     crawl_references,
+    crawl_references_batch,
     fetch_references,
+    fetch_references_batch,
     parse_reference,
     run_s2_stage,
     to_references_json,
@@ -47,12 +51,18 @@ class FakeSession:
         self._responses = list(responses)
         self.calls = []
 
-    def get(self, url, **kwargs):
+    def _next(self, url, **kwargs):
         self.calls.append((url, kwargs))
         item = self._responses.pop(0)
         if isinstance(item, Exception):
             raise item
         return item
+
+    def get(self, url, **kwargs):
+        return self._next(url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self._next(url, **kwargs)
 
 
 class FakeClock:
@@ -79,7 +89,7 @@ def make_client(responses, delay=0.0, max_retries=5, api_key="test-key"):
 
 
 def cited(paper_id, arxiv=None, title="T", authors=("A",), **extra):
-    """Dựng một phần tử `data` của response S2."""
+    """Dựng một phần tử `data` của response S2 (GET /references)."""
     external = {"ArXiv": arxiv} if arxiv else {}
     paper = {
         "paperId": paper_id,
@@ -89,6 +99,23 @@ def cited(paper_id, arxiv=None, title="T", authors=("A",), **extra):
         **extra,
     }
     return {"citedPaper": paper}
+
+
+def batch_ref(paper_id, arxiv=None, title="T", authors=("A",), **extra):
+    """Dựng một phần tử trong danh sách ``references`` của batch response."""
+    external = {"ArXiv": arxiv} if arxiv else {}
+    return {
+        "paperId": paper_id,
+        "title": title,
+        "authors": [{"authorId": "1", "name": name} for name in authors],
+        "externalIds": external,
+        **extra,
+    }
+
+
+def batch_paper(arxiv_id_key, refs):
+    """Dựng một phần tử trong list response của POST /paper/batch."""
+    return {"paperId": f"s2-{arxiv_id_key}", "references": refs}
 
 
 # ---------- parse_reference ----------
@@ -495,10 +522,10 @@ def test_shared_client_keeps_delay_between_threads():
 
 
 def test_run_s2_stage_isolates_failures_and_reports_every_paper(tmp_path):
+    # Batch request: 3 bài, 1 thành công, 1 thất bại (lỗi HTTP), 1 not_found (null trong batch).
+    # run_s2_stage gọi POST /paper/batch 1 lần cho cả 3 bài trong 1 chunk.
     responses = [
-        FakeResponse(200, {"data": [cited("p1", "1706.03762")]}),
-        FakeResponse(400),  # lỗi không thể thử lại: chỉ bài này thất bại
-        FakeResponse(404),
+        FakeResponse(400),  # POST /paper/batch lỗi → toàn chunk failed
     ]
     client, _, _ = make_client(responses)
     seen = []
@@ -510,9 +537,21 @@ def test_run_s2_stage_isolates_failures_and_reports_every_paper(tmp_path):
         on_result=lambda result, seconds: seen.append((result.status, seconds)),
     )
 
-    assert [r.status for r in results] == ["done", "failed", "not_found"]
-    assert [status for status, _ in seen] == ["done", "failed", "not_found"]
+    assert all(r.status == "failed" for r in results)
+    assert [status for status, _ in seen] == ["failed", "failed", "failed"]
     assert all(seconds >= 0 for _, seconds in seen)
+
+
+def test_run_s2_stage_batch_success_and_not_found(tmp_path):
+    batch = [
+        batch_paper("2310.12345", [batch_ref("p1", "1706.03762")]),
+        None,  # S2 không có bài này
+    ]
+    client, _, _ = make_client([FakeResponse(200, batch)])
+
+    results = run_s2_stage(["2310.12345", "2401.00001"], tmp_path, client)
+
+    assert [r.status for r in results] == ["done", "not_found"]
     assert (tmp_path / "2310-12345" / "references.json").exists()
     assert not (tmp_path / "2401-00001").exists()
 
@@ -521,7 +560,8 @@ def test_run_s2_stage_accepts_generator_and_resumes(tmp_path):
     done_dir = tmp_path / "2310-12345"
     done_dir.mkdir()
     (done_dir / "references.json").write_text("{}", encoding="utf-8")
-    client, session, _ = make_client([FakeResponse(200, {"data": []})])
+    # Chỉ bài 2401.00001 cần crawl → batch chỉ gọi 1 lần POST cho 1 bài.
+    client, session, _ = make_client([FakeResponse(200, [batch_paper("2401.00001", [])])])
 
     results = run_s2_stage((i for i in ["2310.12345", "2401.00001"]), tmp_path, client)
 
@@ -530,7 +570,8 @@ def test_run_s2_stage_accepts_generator_and_resumes(tmp_path):
 
 
 def test_run_s2_stage_marks_invalid_id_as_failed_without_stopping(tmp_path):
-    client, session, _ = make_client([FakeResponse(200, {"data": []})])
+    # ID sai dạng: bị loại trước khi gửi batch; chỉ bài hợp lệ đi vào batch.
+    client, session, _ = make_client([FakeResponse(200, [batch_paper("2401.00001", [])])])
 
     results = run_s2_stage(["2310-12345", "2401.00001"], tmp_path, client)
 
@@ -542,16 +583,18 @@ def test_run_s2_stage_marks_invalid_id_as_failed_without_stopping(tmp_path):
 
 
 def test_count_saved_references_scans_every_finished_paper(tmp_path):
-    first = {"data": [cited("p1", "1706.03762"), cited("p2"), cited("p3", "1810.04805")]}
-    second = {"data": [cited("p4", "1301.3781")]}
+    first = [batch_paper("2310.12345", [
+        batch_ref("p1", "1706.03762"), batch_ref("p2"), batch_ref("p3", "1810.04805"),
+    ])]
+    second = [batch_paper("2401.00001", [batch_ref("p4", "1301.3781")])]
     client, _, _ = make_client([FakeResponse(200, first), FakeResponse(200, second)])
-    run_s2_stage(["2310.12345", "2401.00001"], tmp_path, client)
+    run_s2_stage(["2310.12345", "2401.00001"], tmp_path, client, batch_size=1)
 
     assert count_saved_references(tmp_path) == (2, 4, 3)
 
 
 def test_count_saved_references_is_independent_of_resume(tmp_path):
-    client, _, _ = make_client([FakeResponse(200, {"data": [cited("p1", "1706.03762")]})])
+    client, _, _ = make_client([FakeResponse(200, [batch_paper("2310.12345", [batch_ref("p1", "1706.03762")])])])
     run_s2_stage(["2310.12345"], tmp_path, client)
 
     # Chạy lại: bài bị skipped nhưng thống kê corpus vẫn đủ.
@@ -584,3 +627,170 @@ def test_run_s2_stage_reports_skipped_papers_with_zero_counts(tmp_path):
 
     # Hợp đồng: on_result nhận cả bài skipped với số đếm 0, bên gọi phải tự lọc.
     assert [(r.status, r.n_refs, r.n_refs_co_arxiv_id) for r in seen] == [("skipped", 0, 0)]
+
+
+# ---------- S2Client.post_json ----------
+
+
+def test_post_json_sends_correct_method_and_headers():
+    client, session, _ = make_client([FakeResponse(200, [{"ok": 1}])], api_key="secret")
+
+    result = client.post_json("/paper/batch", {"fields": "title"}, {"ids": ["ARXIV:1"]})
+
+    assert result == [{"ok": 1}]
+    # POST phải điều hướng đến phương thức .post() trên session.
+    assert session.calls[0][1]["headers"]["Content-Type"] == "application/json"
+    assert session.calls[0][1]["headers"]["x-api-key"] == "secret"
+    # json= được truyền vào, không phải data=
+    assert session.calls[0][1]["json"] == {"ids": ["ARXIV:1"]}
+
+
+def test_post_json_retries_on_429():
+    responses = [FakeResponse(429, headers={"Retry-After": "3"}), FakeResponse(200, [{"ok": 1}])]
+    client, session, clock = make_client(responses)
+
+    result = client.post_json("/paper/batch", {}, {"ids": []})
+
+    assert result == [{"ok": 1}]
+    assert len(session.calls) == 2
+    assert 3.0 in clock.sleeps
+
+
+def test_post_json_returns_none_on_404():
+    client, session, _ = make_client([FakeResponse(404)])
+
+    assert client.post_json("/paper/batch", {}, {"ids": []}) is None
+    assert len(session.calls) == 1
+
+
+# ---------- _parse_batch_reference ----------
+
+
+def test_parse_batch_reference_parses_arxiv_id():
+    raw = {"paperId": "p1", "externalIds": {"ArXiv": "1706.03762v3"}, "title": "T", "authors": []}
+
+    ref = _parse_batch_reference(raw)
+
+    assert ref is not None
+    assert ref.s2_id == "p1"
+    assert ref.arxiv_id == "1706.03762"  # version được cắt
+
+
+def test_parse_batch_reference_returns_none_for_empty():
+    assert _parse_batch_reference(None) is None
+    assert _parse_batch_reference({}) is None
+
+
+def test_parse_batch_reference_survives_null_fields():
+    ref = _parse_batch_reference({"paperId": "p1", "externalIds": None, "authors": None})
+
+    assert ref is not None
+    assert ref.arxiv_id is None
+    assert ref.authors == []
+
+
+# ---------- fetch_references_batch ----------
+
+
+def test_fetch_references_batch_maps_results_by_arxiv_id():
+    batch = [
+        batch_paper("2310.12345", [batch_ref("p1", "1706.03762"), batch_ref("p2")]),
+        batch_paper("2401.00001", []),
+    ]
+    client, session, _ = make_client([FakeResponse(200, batch)])
+
+    result = fetch_references_batch(["2310.12345", "2401.00001"], client)
+
+    assert len(result["2310.12345"]) == 2
+    assert result["2310.12345"][0].s2_id == "p1"
+    assert result["2401.00001"] == []
+    # Request đi đến /paper/batch với ARXIV: prefix.
+    assert "/paper/batch" in session.calls[0][0]
+    assert session.calls[0][1]["json"] == {"ids": ["ARXIV:2310.12345", "ARXIV:2401.00001"]}
+
+
+def test_fetch_references_batch_marks_null_item_as_not_found():
+    batch = [None, batch_paper("2401.00001", [])]
+    client, _, _ = make_client([FakeResponse(200, batch)])
+
+    result = fetch_references_batch(["2310.12345", "2401.00001"], client)
+
+    assert result["2310.12345"] is None
+    assert result["2401.00001"] == []
+
+
+def test_fetch_references_batch_splits_into_chunks(monkeypatch):
+    # Kiểm tra chunk chia đúng khi có nhiều hơn BATCH_SIZE bài.
+    n = BATCH_SIZE + 1
+    ids = [f"2310.{str(i).zfill(5)}" for i in range(n)]
+    # Mỗi chunk trả một batch list.
+    chunk1 = [batch_paper(aid, []) for aid in ids[:BATCH_SIZE]]
+    chunk2 = [batch_paper(ids[BATCH_SIZE], [])]
+    client, session, _ = make_client([
+        FakeResponse(200, chunk1),
+        FakeResponse(200, chunk2),
+    ])
+
+    result = fetch_references_batch(ids, client)
+
+    assert len(result) == n
+    assert len(session.calls) == 2  # 2 POST requests
+
+
+def test_fetch_references_batch_fallbacks_on_full_page(monkeypatch):
+    # Bài có đúng S2_PAGE_SIZE refs trong batch → fallback sang GET /references.
+    from src.m1_crawling.s2_api import S2_PAGE_SIZE
+
+    big_refs = [batch_ref(f"p{i}") for i in range(S2_PAGE_SIZE)]
+    batch = [batch_paper("2310.12345", big_refs)]
+    # Request 1: POST batch, trả đầy đủ 1000 refs.
+    # Request 2+: GET /references (pagination) chỉ trả 1 trang.
+    get_page = {"data": [{"citedPaper": batch_ref(f"p{i}")} for i in range(S2_PAGE_SIZE)]}
+    client, session, _ = make_client([
+        FakeResponse(200, batch),
+        FakeResponse(200, get_page),  # fallback GET
+    ])
+
+    result = fetch_references_batch(["2310.12345"], client)
+
+    assert len(result["2310.12345"]) == S2_PAGE_SIZE
+    assert len(session.calls) == 2  # 1 POST + 1 GET fallback
+
+
+# ---------- crawl_references_batch ----------
+
+
+def test_crawl_references_batch_writes_files_and_skips_done(tmp_path):
+    done_dir = tmp_path / "2310-12345"
+    done_dir.mkdir()
+    (done_dir / "references.json").write_text("{}", encoding="utf-8")
+    batch = [batch_paper("2401.00001", [batch_ref("p1", "1706.03762"), batch_ref("p2")])]
+    client, session, _ = make_client([FakeResponse(200, batch)])
+
+    results = crawl_references_batch(
+        ["2310.12345", "2401.00001"], tmp_path, client, resume=True
+    )
+
+    assert [r.status for r in results] == ["skipped", "done"]
+    assert (r := results[1]).n_refs == 2 and r.n_refs_co_arxiv_id == 1
+    assert len(session.calls) == 1  # chỉ POST cho bài chưa xong
+    assert (tmp_path / "2401-00001" / "references.json").exists()
+
+
+def test_crawl_references_batch_handles_not_found_and_invalid_id(tmp_path):
+    batch = [None]  # chỉ bài hợp lệ đi vào batch; ID sai bị loại sớm.
+    client, _, _ = make_client([FakeResponse(200, batch)])
+
+    results = crawl_references_batch(["2310-bad", "2401.00001"], tmp_path, client)
+
+    assert results[0].status == "failed"   # ID sai dạng
+    assert results[1].status == "not_found"  # S2 không có bài
+
+
+def test_crawl_references_batch_marks_all_failed_on_batch_error(tmp_path):
+    client, _, _ = make_client([FakeResponse(400)])  # POST lỗi không thể retry
+
+    results = crawl_references_batch(["2310.12345", "2401.00001"], tmp_path, client)
+
+    assert all(r.status == "failed" for r in results)
+    assert not any(tmp_path.iterdir())  # không ghi file nào

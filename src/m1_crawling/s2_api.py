@@ -37,6 +37,9 @@ S2_BASE_URL = "https://api.semanticscholar.org/graph/v1"
 # Các field của bài ĐƯỢC TRÍCH DẪN (endpoint /references). paperId luôn được trả sẵn.
 S2_FIELDS = "title,authors,year,publicationDate,venue,externalIds"
 S2_PAGE_SIZE = 1000  # S2 cho tối đa 1000 phần tử mỗi trang
+# Batch endpoint: tối đa 500 ID/request; field dùng dot-notation "references.X".
+BATCH_SIZE = 500
+S2_BATCH_FIELDS = "references.paperId,references.title,references.authors,references.year,references.publicationDate,references.venue,references.externalIds"
 # Lỗi tạm thời: chờ rồi thử lại. Các lỗi khác (400, 401, 403...) thử lại cũng vô ích.
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_BACKOFF_SECONDS = 60
@@ -158,29 +161,45 @@ class S2Client:
         except (KeyError, ValueError, TypeError):
             return self._backoff(attempt)
 
-    def get_json(self, path: str, params: dict[str, Any]) -> dict[str, Any] | None:
-        """Gọi GET tới S2 và trả JSON đã giải mã.
+    def _request_with_retry(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any],
+        json_body: Any = None,
+    ) -> dict[str, Any] | list[Any] | None:
+        """Gửi HTTP request (GET hoặc POST) tới S2 với retry và backoff.
 
         Args:
-            path: Đường dẫn sau base_url, ví dụ "/paper/arXiv:1706.03762/references".
+            method: "GET" hoặc "POST".
+            path: Đường dẫn sau base_url.
             params: Tham số trên URL.
+            json_body: Body JSON cho POST; None với GET.
 
         Returns:
-            Dict JSON, hoặc None khi S2 không có dữ liệu (HTTP 404).
+            Kết quả JSON (dict hoặc list), hoặc None khi HTTP 404.
 
         Raises:
-            S2Error: Khi vẫn gặp lỗi tạm thời (429, 5xx, timeout, JSON hỏng) sau max_retries lần.
+            S2Error: Khi vẫn gặp lỗi tạm thời sau max_retries lần.
             requests.HTTPError: Với lỗi không thể thử lại (400, 401, 403...).
         """
         headers = {"x-api-key": self._api_key} if self._api_key else {}
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
         url = f"{self._settings.base_url}{path}"
         max_retries = self._settings.max_retries
         for attempt in range(1, max_retries + 1):
             self._wait_turn()
             try:
-                response = self._session.get(
-                    url, params=params, headers=headers, timeout=self._settings.timeout
-                )
+                if method == "POST":
+                    response = self._session.post(
+                        url, params=params, headers=headers,
+                        json=json_body, timeout=self._settings.timeout,
+                    )
+                else:
+                    response = self._session.get(
+                        url, params=params, headers=headers, timeout=self._settings.timeout
+                    )
             except (requests.Timeout, requests.ConnectionError):
                 reason, wait = "lỗi mạng", self._backoff(attempt)
             else:
@@ -204,6 +223,39 @@ class S2Client:
             if attempt < max_retries:
                 self._sleep(wait)
         raise S2Error(f"Hết {max_retries} lần thử ({reason}): {path}")
+
+    def get_json(self, path: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        """Gọi GET tới S2 và trả JSON đã giải mã.
+
+        Args:
+            path: Đường dẫn sau base_url, ví dụ "/paper/arXiv:1706.03762/references".
+            params: Tham số trên URL.
+
+        Returns:
+            Dict JSON, hoặc None khi S2 không có dữ liệu (HTTP 404).
+
+        Raises:
+            S2Error: Khi vẫn gặp lỗi tạm thời (429, 5xx, timeout, JSON hỏng) sau max_retries lần.
+            requests.HTTPError: Với lỗi không thể thử lại (400, 401, 403...).
+        """
+        return self._request_with_retry("GET", path, params)  # type: ignore[return-value]
+
+    def post_json(self, path: str, params: dict[str, Any], body: Any) -> list[Any] | None:
+        """Gọi POST tới S2 và trả JSON đã giải mã (thường là list kết quả batch).
+
+        Args:
+            path: Đường dẫn sau base_url, ví dụ "/paper/batch".
+            params: Tham số trên URL (ví dụ {"fields": "..."}).
+            body: Dict sẽ được serialize thành JSON body.
+
+        Returns:
+            List JSON, hoặc None khi HTTP 404.
+
+        Raises:
+            S2Error: Khi vẫn gặp lỗi tạm thời sau max_retries lần.
+            requests.HTTPError: Với lỗi không thể thử lại.
+        """
+        return self._request_with_retry("POST", path, params, json_body=body)  # type: ignore[return-value]
 
 
 def parse_reference(cited: dict[str, Any] | None) -> S2Reference | None:
@@ -282,6 +334,102 @@ def fetch_references(arxiv_id: str, client: S2Client | None = None) -> list[S2Re
         offset = next_offset
 
 
+def _parse_batch_reference(raw: dict[str, Any] | None) -> S2Reference | None:
+    """Đổi một phần tử trong mảng ``references`` của batch response thành S2Reference.
+
+    Batch endpoint trả về object trực tiếp (không có wrapper ``citedPaper``), nên cần
+    hàm riêng thay vì tái dùng parse_reference.
+
+    Args:
+        raw: Một phần tử trong danh sách ``references`` của batch response.
+
+    Returns:
+        S2Reference, hoặc None nếu bản ghi rỗng.
+    """
+    if not raw:
+        return None
+    raw_arxiv = (raw.get("externalIds") or {}).get("ArXiv")
+    arxiv_id = None
+    if raw_arxiv:
+        try:
+            arxiv_id = validate_arxiv_id(VERSION_SUFFIX.sub("", str(raw_arxiv).strip()))
+        except ValueError:
+            logger.warning("ArXiv ID lạ từ S2 batch: %r", raw_arxiv)
+    authors = [a["name"] for a in (raw.get("authors") or []) if a.get("name")]
+    return S2Reference(
+        s2_id=raw.get("paperId"),
+        arxiv_id=arxiv_id,
+        title=raw.get("title"),
+        authors=authors,
+        publication_date=raw.get("publicationDate"),
+        year=raw.get("year"),
+        venue=raw.get("venue"),
+    )
+
+
+def fetch_references_batch(
+    arxiv_ids: list[str],
+    client: S2Client | None = None,
+) -> dict[str, list[S2Reference] | None]:
+    """Lấy references của nhiều bài trong một lần gọi POST /paper/batch.
+
+    Hiệu quả hơn gọi đơn lẻ vì gom tối đa 500 ID vào một request.
+    Nếu một bài trả về đúng S2_PAGE_SIZE refs (có thể bị cắt do giới hạn trang),
+    sẽ fallback sang fetch_references (GET với pagination) cho bài đó.
+
+    Args:
+        arxiv_ids: Danh sách mã arXiv chuẩn, không có hậu tố version. Mỗi ID đã được
+            validate trước khi gọi hàm này.
+        client: Client dùng chung; None thì tạo mới.
+
+    Returns:
+        Dict ánh xạ arxiv_id -> list[S2Reference] (bài có mặt, kể cả khi không có ref)
+        hoặc None (S2 không có bài).
+
+    Raises:
+        S2Error: Khi S2 lỗi tạm thời quá số lần thử.
+    """
+    client = client or S2Client()
+    result: dict[str, list[S2Reference] | None] = {}
+
+    # Chia thành các nhóm BATCH_SIZE, gọi POST mỗi nhóm.
+    for chunk_start in range(0, len(arxiv_ids), BATCH_SIZE):
+        chunk = arxiv_ids[chunk_start : chunk_start + BATCH_SIZE]
+        s2_ids = [f"ARXIV:{aid}" for aid in chunk]
+        batch_resp = client.post_json(
+            "/paper/batch",
+            {"fields": S2_BATCH_FIELDS},
+            {"ids": s2_ids},
+        )
+        if batch_resp is None:
+            # Toàn batch 404 (cực hiếm): đánh dấu not_found cho tất cả.
+            for aid in chunk:
+                result[aid] = None
+            continue
+
+        for arxiv_id, item in zip(chunk, batch_resp):
+            if item is None:
+                # S2 không có bài này.
+                result[arxiv_id] = None
+                continue
+
+            raw_refs: list[dict[str, Any]] = item.get("references") or []
+            refs = [r for raw in raw_refs if (r := _parse_batch_reference(raw)) is not None]
+
+            # Nếu trả về đúng S2_PAGE_SIZE refs thì rất có thể bị cắt trang.
+            # Fallback sang GET /references có pagination đầy đủ để không mất dữ liệu.
+            if len(raw_refs) >= S2_PAGE_SIZE:
+                logger.info(
+                    "Bài %s có >= %d refs trong batch, fallback sang GET /references",
+                    arxiv_id, S2_PAGE_SIZE,
+                )
+                refs = fetch_references(arxiv_id, client) or []
+
+            result[arxiv_id] = refs
+
+    return result
+
+
 def to_references_json(arxiv_id: str, refs: list[S2Reference]) -> dict[str, dict[str, Any]]:
     """Dựng nội dung references.json: chỉ ref có arXiv ID, key dạng "yymm-id".
 
@@ -348,17 +496,132 @@ def crawl_references(
     )
 
 
+def crawl_references_batch(
+    arxiv_ids: list[str],
+    root: Path,
+    client: S2Client | None = None,
+    on_result: Callable[[CrawlResult, float], None] | None = None,
+    resume: bool = True,
+) -> list[CrawlResult]:
+    """Lấy references của nhiều bài cùng lúc bằng POST /paper/batch.
+
+    Hiệu quả hơn crawl_references khi xử lý nhiều bài: gom BATCH_SIZE bài vào một request
+    thay vì gọi đơn lẻ từng bài. Bài đã có references.json (resume) được bỏ qua trước khi
+    gộp vào batch để không tốn request.
+
+    Args:
+        arxiv_ids: Danh sách mã arXiv chuẩn, theo thứ tự đầu vào.
+        root: Thư mục gốc chứa các thư mục bài, ví dụ data/raw.
+        client: Client dùng chung; None thì tạo từ cấu hình mặc định.
+        on_result: Hàm gọi sau mỗi bài với (kết quả, số giây xử lý).
+        resume: True thì bỏ qua bài đã có references.json.
+
+    Returns:
+        Kết quả của từng bài theo thứ tự đầu vào.
+    """
+    client = client or S2Client()
+    results: list[CrawlResult] = []
+
+    # Phân loại: bài đã xong (skipped) và bài cần crawl.
+    to_fetch: list[str] = []
+    skipped_set: set[str] = set()
+    for arxiv_id in arxiv_ids:
+        try:
+            target = root / to_folder_name(arxiv_id) / "references.json"
+        except ValueError:
+            # to_folder_name cũng validate; bắt sớm để không crash cả vòng.
+            logger.exception("Lỗi khi lấy reference của %s", arxiv_id)
+            continue
+        if resume and target.exists():
+            skipped_set.add(arxiv_id)
+        else:
+            # Validate trước khi đưa vào batch để bài ID sai không làm hỏng cả nhóm.
+            try:
+                validate_arxiv_id(arxiv_id)
+                to_fetch.append(arxiv_id)
+            except ValueError:
+                logger.exception("Lỗi khi lấy reference của %s", arxiv_id)
+                skipped_set.discard(arxiv_id)  # không trong skipped
+                # Đánh dấu failed ngay; sẽ thu thập khi duyệt arxiv_ids theo thứ tự.
+
+    # Gọi batch cho những bài cần crawl.
+    fetch_results: dict[str, list[S2Reference] | None] = {}
+    if to_fetch:
+        try:
+            fetch_results = fetch_references_batch(to_fetch, client)
+        except (S2Error, requests.RequestException):
+            logger.exception("Lỗi batch khi lấy references; chuyển toàn nhóm sang failed")
+            # Đánh dấu tất cả bài trong nhóm là failed.
+            for aid in to_fetch:
+                fetch_results[aid] = []  # sentinel rỗng; phân biệt bằng cờ failed bên dưới
+            # Đánh dấu riêng để ghi failed thay vì xử lý bình thường.
+            failed_ids = set(to_fetch)
+        else:
+            failed_ids: set[str] = set()
+    else:
+        failed_ids: set[str] = set()
+
+    # Duyệt theo thứ tự đầu vào để kết quả khớp arxiv_ids.
+    for arxiv_id in arxiv_ids:
+        started = time.perf_counter()
+        if arxiv_id in skipped_set:
+            result = CrawlResult(arxiv_id=arxiv_id, status="skipped")
+        elif arxiv_id in failed_ids:
+            result = CrawlResult(arxiv_id=arxiv_id, status="failed")
+        elif arxiv_id not in fetch_results:
+            # ID sai dạng: đã log exception ở vòng validate phía trên.
+            result = CrawlResult(arxiv_id=arxiv_id, status="failed")
+        else:
+            refs = fetch_results[arxiv_id]
+            paper_dir = root / to_folder_name(arxiv_id)
+            try:
+                if refs is None:
+                    logger.warning("S2 không có bài %s", arxiv_id)
+                    result = CrawlResult(arxiv_id=arxiv_id, status="not_found")
+                else:
+                    by_arxiv = to_references_json(arxiv_id, refs)
+                    write_json(
+                        paper_dir / "references_all.json",
+                        [ref.model_dump(mode="json") for ref in refs],
+                    )
+                    write_json(paper_dir / "references.json", by_arxiv)
+                    logger.info(
+                        "Xong reference %s: %d ref, %d có arXiv ID",
+                        arxiv_id, len(refs), len(by_arxiv),
+                    )
+                    result = CrawlResult(
+                        arxiv_id=arxiv_id,
+                        status="done",
+                        n_refs=len(refs),
+                        n_refs_co_arxiv_id=len(by_arxiv),
+                    )
+            except OSError:
+                logger.exception("Lỗi ghi file cho %s", arxiv_id)
+                result = CrawlResult(arxiv_id=arxiv_id, status="failed")
+
+        results.append(result)
+        if on_result is not None:
+            on_result(result, time.perf_counter() - started)
+
+    return results
+
+
 def run_s2_stage(
     arxiv_ids: Iterable[str],
     root: Path,
     client: S2Client | None = None,
     on_result: Callable[[CrawlResult, float], None] | None = None,
     resume: bool = True,
+    batch_size: int = BATCH_SIZE,
 ) -> list[CrawlResult]:
     """Chạy bước S2 cho cả một dải bài; một bài lỗi không làm sập cả dải.
 
     Hàm này không phụ thuộc vào bước tải source của arXiv (S2 chỉ cần arxiv_id), nên có thể
     chạy trong một luồng riêng song song với crawler arXiv mà không vi phạm giới hạn nào.
+
+    Chiến lược tối ưu: gom arxiv_ids thành từng nhóm ``batch_size`` bài và gọi
+    POST /paper/batch thay vì GET /references đơn lẻ. Bài có >= S2_PAGE_SIZE refs sẽ được
+    fallback tự động sang GET /references có pagination.
 
     Args:
         arxiv_ids: Các mã arXiv chuẩn (list hay generator đều được).
@@ -368,23 +631,20 @@ def run_s2_stage(
             Bên gọi cần lọc bài "skipped" trước khi ghi vào Profiler để thời gian trung bình
             mỗi bài chính xác.
         resume: True thì bỏ qua bài đã có references.json.
+        batch_size: Số bài gom vào một lần POST; mặc định BATCH_SIZE (500).
 
     Returns:
         Kết quả của từng bài theo thứ tự đầu vào.
     """
     client = client or S2Client()
+    all_ids = list(arxiv_ids)
     results: list[CrawlResult] = []
-    for arxiv_id in arxiv_ids:
-        started = time.perf_counter()
-        try:
-            result = crawl_references(arxiv_id, root / to_folder_name(arxiv_id), client, resume)
-        except (S2Error, requests.RequestException, ValueError):
-            # Chỉ bắt lỗi của riêng bài này (mạng, S2, ID sai); lỗi đĩa hay lỗi code vẫn nổ.
-            logger.exception("Lỗi khi lấy reference của %s", arxiv_id)
-            result = CrawlResult(arxiv_id=arxiv_id, status="failed")
-        results.append(result)
-        if on_result is not None:
-            on_result(result, time.perf_counter() - started)
+
+    for chunk_start in range(0, len(all_ids), batch_size):
+        chunk = all_ids[chunk_start : chunk_start + batch_size]
+        chunk_results = crawl_references_batch(chunk, root, client, on_result, resume)
+        results.extend(chunk_results)
+
     return results
 
 
