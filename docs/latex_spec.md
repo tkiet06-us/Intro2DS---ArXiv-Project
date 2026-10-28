@@ -132,7 +132,7 @@ Quá trình phân tích và xây dựng dữ liệu bắt buộc phải tuân th
 1. **Nhận diện động cấp bậc tiêu đề:** Cấp bậc của heading được xác định linh hoạt dựa trên các lệnh thực tế xuất hiện trong bài báo, không gán cứng cố định (chi tiết tại Mục 4.1).
 2. **Nút lá chỉ gồm 3 loại `kind`:** Chỉ gồm `sentence`, `formula` và `figure` (bao gồm cả hình ảnh và bảng biểu, vì đề bài coi Table là một loại Figure). Mọi nút lá đều không chứa nút con với `children = []` (chi tiết tại Mục 5).
 3. **Danh sách liệt kê là nút nhánh:** Môi trường `itemize` là nút nhánh cấp 1, mỗi `item` là nút con cấp 2 chứa các câu văn hoặc danh sách con lồng nhau bên trong (chi tiết tại Mục 5.4).
-4. **Phân loại phần đặc biệt:** Loại bỏ hoàn toàn phần References khỏi cây nội dung; giữ lại và đánh dấu metadata vai trò cho phần Acknowledgments và Appendices (chi tiết tại Mục 6).
+4. **Phân loại phần đặc biệt:** Loại bỏ hoàn toàn phần References khỏi cây nội dung; bảo toàn phần Acknowledgments và Appendices dưới dạng các nút heading thông thường (chi tiết tại Mục 6).
 5. **Chuẩn hóa thuộc tính `kind` và mã định danh:** Mỗi phần tử phải có thuộc tính `kind` theo enum chuẩn hóa và mã định danh `element_id` duy nhất có tính xác định cao chứa tiền tố `arxiv_id` (chi tiết tại Mục 3.4 và 3.5).
 6. **Lưu trữ Parquet hoàn toàn phẳng:** Biểu diễn phả hệ qua mô hình Adjacency List với các cột nguyên thủy chuẩn Flat & Primitive, tuyệt đối không lưu lồng đối tượng hay chuỗi JSON serialize (chi tiết tại Mục 3).
 
@@ -157,7 +157,12 @@ Cấu trúc thư mục của repository bộ dữ liệu trên Hugging Face `<da
 
 ### 3.3 Nguyên tắc làm phẳng dữ liệu từ LaTeX sang Parquet
 - Hugging Face Dataset Viewer và Streaming backend đọc Parquet trực tiếp theo từng khối nhị phân Row Groups hoặc Shards.
-- Khi làm phẳng node từ `hierarchy.json` sang bảng `elements`, trường `content` chỉ lưu chuỗi văn bản thuần (như nội dung câu văn, biểu thức toán, tiêu đề heading, hoặc nội dung/caption của hình và bảng). Tuyệt đối không đóng gói các thuộc tính phụ (`caption`, `label`, `level`, `role`) thành chuỗi JSON serialize (`"{\"caption\": \"...\", \"label\": \"...\"}"`) nhét vào `content`.
+- **Quy chuẩn lưu trữ trường `content` trong bảng `elements`:**
+  - Đối với nút `heading` và `sentence`: lưu trực tiếp chuỗi văn bản thuần (tiêu đề section hoặc nội dung câu văn).
+  - Đối với nút `formula`: lưu **nguyên khối TeX thô** từ `\begin{...}` đến `\end{...}`, bao gồm cả `\label{...}`. Với cú pháp `$$...$$` và `\[...]`, chuẩn hóa về `\begin{equation}...\end{equation}` để thống nhất với `tests/make_mock.py` và exporter.
+  - Đối với nút `figure`: lưu **nguyên khối TeX thô** của toàn bộ hình/bảng từ `\begin{figure}` / `\begin{table}` / `\begin{tabular}` đến `\end{...}`, bao gồm cả `\caption{...}`, `\label{...}`, và các môi trường con.
+  - **Lý do thiết kế:** Cột `Element.content` là cột duy nhất có thể chứa nội dung. Nếu bóc vỏ công thức hoặc chỉ lấy caption thì `\label`, `\caption` hay mã bảng/hình sẽ bị mất hoàn toàn. Mặt khác, `tests/make_mock.py` cũng đang dùng raw block cho formula và figure, nên quy chuẩn này khớp 100% với mock hiện có và exporter. Vì `content` vẫn là một chuỗi duy nhất nên `to_rows()` vẫn giữ đúng 4 cột phẳng nguyên thủy và không cần đổi schema.
+  - Cả `ParsedNode`, hàm `to_nested()` lẫn hai bảng `elements`, `hierarchy` đều không có các thuộc tính phụ (`caption`, `label`, `level`, `role`, `title`). Tuyệt đối không tách thành trường riêng và không đóng gói thành chuỗi JSON serialize nhét vào `content`.
 
 ### 3.4 Tập giá trị chuẩn cho thuộc tính `kind`
 Đồng bộ 100% với `Kind` enum trong `src/schemas.py` (7 giá trị):
@@ -179,6 +184,11 @@ Quy chuẩn định danh `element_id` bắt buộc sử dụng hàm `make_elemen
 element_id = make_element_id(arxiv_id, local_id)
 # Kết quả: f"{to_folder_name(arxiv_id)}#{local_id}"
 ```
+
+- Định dạng ID tuân thủ cấu trúc **publication key + anchor** theo đúng README (Mục 13.1):
+  - Node gốc phiên bản 1: `make_element_id("2411.03799", "root1")` $\rightarrow$ `"2411-03799#root1"`.
+  - Node câu văn hoặc heading: `make_element_id("2411.03799", "v1-s1")` $\rightarrow$ `"2411-03799#v1-s1"` (hoặc `"2411-03799#s1"` sau bước khử trùng lặp dedup giữa các phiên bản).
+  - Tuyệt đối không dùng các định danh tùy tiện như `#doc`, `#sent1`.
 
 ---
 
@@ -218,31 +228,34 @@ Sử dụng cấu trúc dữ liệu ngăn xếp để quản lý phạm vi của
 
 ```python
 # Thuật toán dựng cây:
-stack = [(root_node, level=0)]
+# stack quản lý tuple (level, node_id) nội bộ trong quá trình dựng, node không lưu trường level
+stack = [(0, root_node_id)]
 
 for item in parsed_items:
     if item.is_heading:
         item_level = dynamic_level_map[item.command]
         # Đóng các section có level sâu hơn hoặc bằng level của heading hiện tại
-        while stack and stack[-1].level >= item_level:
+        while len(stack) > 1 and stack[-1][0] >= item_level:
             stack.pop()
         
-        parent_node = stack[-1].node
-        new_section_node = create_section_node(item, level=item_level)
-        parent_node.children.append(new_section_node)
-        stack.append((new_section_node, level=item_level))
+        parent_id = stack[-1][1]
+        new_heading_id = add_node(kind=Kind.HEADING, content=item.title, parent=parent_id)
+        stack.append((item_level, new_heading_id))
     else:
         # Nút nội dung: câu văn, công thức, danh sách, hình ảnh, bảng biểu
-        current_parent = stack[-1].node
-        current_parent.children.append(item.node)
+        parent_id = stack[-1][1]
+        add_node(kind=item.kind, content=item.raw_content, parent=parent_id)
 ```
+
+> [!NOTE]
+> Biến `level` chỉ tồn tại nội bộ trong ngăn xếp `stack` của Tree Builder để xác định quan hệ cha - con, hoàn toàn không được lưu thành thuộc tính của node hay cột trong schema Parquet.
 
 **Xử lý văn bản trước Heading đầu tiên:**
 Mọi nội dung xuất hiện sau `\begin{document}` hoặc sau `abstract` nhưng nằm trước lệnh heading đầu tiên sẽ được gắn trực tiếp vào nút gốc `document`.
 
 ### 4.3 Chuẩn hóa tiêu đề Section
 Tiêu đề của section được trích xuất từ đối số thứ nhất của lệnh heading và làm sạch:
-1. Loại bỏ nhãn tham chiếu `\label{...}` lồng bên trong tiêu đề; nhãn này được lưu riêng vào thuộc tính tương ứng nếu cần.
+1. Loại bỏ nhãn tham chiếu `\label{...}` lồng bên trong tiêu đề (loại bỏ hoàn toàn khỏi tiêu đề, không lưu thành trường riêng vì schema không có cột `label`).
 2. Xử lý macro tương thích `\texorpdfstring{TeX text}{Plain text}`: Luôn lấy tham số thứ hai `Plain text` để đảm bảo tiêu đề sạch ký tự lạ.
 3. Bảo toàn các công thức toán nội dòng như `$\Delta$-Coloring` để giữ nguyên vẹn ý nghĩa chuyên ngành.
 4. Xóa bỏ các lệnh ngắt dòng thủ công `\\`, `\newline` hoặc định dạng chữ `\textbf{...}`, `\emph{...}`.
@@ -283,16 +296,16 @@ Mọi công thức hiển thị riêng biệt trên một dòng được đóng 
   `align`, `align*`, `gather`, `gather*`, `multline`, `multline*`, `flalign`, `flalign*`, `eqnarray`, `eqnarray*`, `displaymath`.
 
 **Quy tắc trích xuất:**
-- Thuộc tính `content`: Chứa toàn bộ nội dung biểu thức toán học bên trong, đã loại bỏ các dấu bao quanh như `$$`, `\[ \]`, hoặc `\begin{...}` / `\end{...}`.
-- Trích xuất nhãn: Nếu bên trong công thức có chứa lệnh `\label{key}`, trích xuất `key` ra thuộc tính `label`, sau đó xóa lệnh `\label{key}` khỏi `content` để công thức toán sạch sẽ.
-- Môi trường con lồng bên trong: Các cấu trúc toán bên trong công thức khối như `\begin{split}`, `\begin{cases}`, `\begin{aligned}`, `\begin{matrix}` là một phần của công thức, không tách thành các node lá độc lập.
+- Thuộc tính `content`: Lưu **nguyên khối TeX** của công thức, từ `\begin{...}` đến `\end{...}`, bao gồm cả `\label{...}`. Với cú pháp `$$ ... $$` hoặc `\[ ... \]`, parser chuẩn hóa đưa về dạng `\begin{equation} ... \end{equation}` để thống nhất với `tests/make_mock.py` và exporter.
+- Không bóc vỏ và không tách nhãn: Lệnh `\label{...}` (nếu có) được giữ nguyên vẹn bên trong khối TeX thô của `content`, tuyệt đối không bóc thẻ `\begin`/`\end` và không tách ra thành trường `label` riêng hay cột riêng (vì `ParsedNode`, `Element`, và `to_nested()` không có trường `label`).
+- Môi trường con lồng bên trong: Các cấu trúc toán bên trong công thức khối như `\begin{split}`, `\begin{cases}`, `\begin{aligned}`, `\begin{matrix}` là một phần của công thức, được bảo toàn nguyên vẹn bên trong khối TeX thô của `content`, không tách thành các node lá độc lập.
 - Toán nội dòng: Cú pháp `$x^2 + y^2 = z^2$` nằm trong luồng văn bản phải được giữ nguyên trong `sentence`, không tạo node `formula`.
 
 **Xử lý hiện tượng câu bị ngắt quãng bởi công thức khối:**
 Khi công thức khối xuất hiện giữa câu, parser chia thành chuỗi 3 nút liên tiếp theo thứ tự xuất hiện trong văn bản nguồn:
 ```text
 [sentence: "Hệ số ma sát được định nghĩa bởi"]
-[formula: "f = \mu N"]
+[formula: "\begin{equation} f = \mu N \end{equation}"]
 [sentence: "trong đó \mu là hệ số tĩnh."]
 ```
 
@@ -304,13 +317,12 @@ Toàn bộ khối môi trường trôi (hình ảnh và bảng biểu) được 
 - Khối bảng biểu: `table`, `table*`, và `tabular` độc lập khi đứng ngoài môi trường table.
 
 **Quy tắc trích xuất:**
-- `caption`: Nội dung văn bản bên trong lệnh `\caption{...}`. Nếu có cả caption ngắn và dài `\caption[ngắn]{dài}`, ưu tiên lấy phần `dài`.
-- `label`: Trích xuất từ lệnh `\label{...}` nằm trong khối.
-- `content`: Lưu toàn bộ khối TeX thô sau bước làm sạch hoặc cấu trúc bảng thô (hoặc nội dung caption khi ánh xạ sang bảng `elements`).
+- Thuộc tính `content`: Lưu **nguyên khối TeX thô** của toàn bộ hình/bảng (từ `\begin{figure}` / `\begin{table}` / `\begin{tabular}` đến `\end{...}`). Toàn bộ các câu lệnh bên trong như `\caption{...}`, `\label{...}`, `\includegraphics{...}` hay cấu trúc bảng `tabular` và các môi trường con được giữ nguyên vẹn trong chuỗi `content` thô.
+- Không tách `caption` hay `label` thành trường riêng: Cả `ParsedNode`, hàm xuất `to_nested()` lẫn bảng Parquet `elements` đều không có các trường `caption` hay `label`. Mọi chi tiết về chú thích và nhãn đều nằm sẵn trong chuỗi TeX thô của `content`, không tách thành trường riêng hay cột riêng và không serialize JSON vào `content`.
 - **Trường hợp xóa ảnh ở M1:** Crawler M1 đã xóa các file ảnh nhị phân như `.png`, `.jpg`, `.pdf` để tiết kiệm dung lượng nhưng vẫn giữ nguyên mã `\begin{figure}`. Bộ dựng cây vẫn tạo node `figure` bình thường dù lệnh `\includegraphics` bên trong không còn file ảnh vật lý.
-- Các môi trường con như `subfigure`, `minipage` được giữ nguyên trong nội dung của node `figure`, không tách thành các node riêng rẽ.
+- Các môi trường con như `subfigure`, `minipage` được giữ nguyên trong nội dung khối TeX thô của node `figure`, không tách thành các node riêng rẽ.
 - **Tuân thủ nguyên tắc lưu Parquet phẳng:**
-  Trong file trung gian `hierarchy.json`, các trường `caption`, `label` có thể được tổ chức thành các key riêng của node để phục vụ bóc tách. Tuy nhiên, khi làm phẳng vào bảng Parquet `elements`, trường `content` lưu trữ chuỗi văn bản thuần, tuyệt đối không serialize thành chuỗi JSON dạng `{\"caption\": \"...\", \"label\": \"...\"}`.
+  Cả trong file trung gian `hierarchy.json` lẫn bảng Parquet `elements`, trường `content` đều lưu trữ trực tiếp chuỗi khối TeX thô, tuyệt đối không serialize thành chuỗi JSON dạng `{\"caption\": \"...\", \"label\": \"...\"}`.
 
 ### 5.4 Nút nhánh: Danh sách liệt kê và mục danh sách
 Cấu trúc danh sách biểu diễn theo mô hình hai tầng lồng nhau:
@@ -329,7 +341,7 @@ Node "itemize"
 Bao gồm các môi trường `itemize`, `enumerate` và `description`.
 - Tạo một node `kind = "itemize"` để bọc toàn bộ khối môi trường.
 - Với mỗi lệnh `\item`, tạo một node `kind = "item"` làm con của node `itemize`.
-- Nếu có nhãn tùy biến `\item[label]`, lưu `label` vào thuộc tính của item.
+- Nếu có nhãn tùy biến `\item[label]`, nhãn này được loại bỏ do schema không có cột riêng; nội dung mục được bóc tách bình thường.
 - Nội dung sau `\item` được phân tích như văn bản thông thường, bao gồm câu văn, công thức hoặc danh sách lồng nhau.
 
 ---
@@ -357,26 +369,26 @@ Phần cảm ơn phải được bảo toàn trong cây nội dung.
 - Các tiêu đề thường gặp: `Acknowledgment`, `Acknowledgments`, `Acknowledgement`, `Acknowledgements`.
 - Các môi trường đặc thù: `\begin{acknowledgments} ... \end{acknowledgments}` trong gói `revtex4`.
 - **Quy tắc dựng node:**
-  - Tạo node `kind = "heading"`.
-  - Thiết lập thuộc tính tiêu đề: `title = "Acknowledgments"`.
-  - Phân tích các câu văn bên trong như một Section bình thường.
-  - Thêm cờ metadata `role = "acknowledgments"` để phục vụ các tác vụ phân tích tiếp theo.
+  - Tạo node `kind = "heading"` với `content = "Acknowledgments"` (tiêu đề section được lưu trực tiếp vào trường `content`; không có trường `title`).
+  - Nút heading này đóng vai trò như một section cấp cao nhất trực tiếp dưới nút gốc `document`.
+  - Phân tích các câu văn bên trong thành các nút con `kind = "sentence"` gắn cha là heading này.
+  - Không sinh các trường `title`, `level` hay `role` (vì `ParsedNode`, `Element`, `Hierarchy` trong `src/schemas.py` và `to_nested()` hoàn toàn không có các cột này; vai trò acknowledgment chỉ xử lý nội bộ trong bộ quét để phân loại khối `special`).
 
 ### 6.3 Phần phụ lục
 Mọi nội dung trong phần phụ lục phải được giữ trọn vẹn trong cây phân cấp.
 - Chỉ thị phân định: Lệnh `\appendix` hoặc môi trường `\begin{appendices} ... \end{appendices}`.
 - Lệnh `\appendix` trong LaTeX là một công tắc chuyển chế độ đánh số từ chữ số sang chữ cái A, B, C; bản thân lệnh này không nhất thiết phải là một heading.
-- Khi gặp `\appendix`, toàn bộ các section xuất hiện phía sau lệnh này đều được đánh dấu metadata `role = "appendix"`.
+- Khi gặp `\appendix`, các section xuất hiện phía sau lệnh này vẫn được dựng thành các node `kind = "heading"` bình thường với `content` là tiêu đề section.
+- Không sinh trường `role = "appendix"` (cũng như `title`, `level`) vào dữ liệu vì `ParsedNode`, `Element`, `Hierarchy` và `to_nested()` không có các trường này; trạng thái appendix chỉ dùng nội bộ trong parser để reset cơ chế bỏ qua References hoặc xác định phạm vi kết thúc References.
 - Nếu phụ lục xuất hiện sau phần References, hệ thống vẫn tiếp tục mở lại việc dựng cây cho phụ lục, tuyệt đối không cắt bỏ phụ lục theo References.
 
 ### 6.4 Phần tóm tắt và lời mở đầu
 - **Preamble:** Toàn bộ phần mã nguồn nằm trước `\begin{document}` chứa các khai báo `\documentclass`, `\usepackage`, macro bị loại bỏ khỏi cây nội dung và không đưa vào cây phân cấp.
 - **Abstract:** Môi trường `\begin{abstract} ... \end{abstract}` được chuẩn hóa thành một Heading đặc biệt:
   - `kind = "heading"`
-  - `title = "Abstract"`
-  - `level = 1`
-  - `role = "abstract"`
-  - Các câu văn bên trong abstract được tách thành các node `sentence` con.
+  - `content = "Abstract"` (tiêu đề lưu trực tiếp vào trường `content`; không có các trường `title`, `level`, hay `role`).
+  - Nút heading này được gắn làm con trực tiếp của nút gốc `document`.
+  - Các câu văn bên trong abstract được tách thành các node `sentence` con có cha là heading này.
 - **Metadata tác giả:** Các lệnh `\title{...}`, `\author{...}`, `\date{...}` không tạo node trong cây vì đã được lưu trữ riêng trong bảng `papers`.
 - **Nội dung sau `\end{document}`:** Bỏ qua hoàn toàn.
 
@@ -402,15 +414,15 @@ Các môi trường định lý và trình bày: `theorem`, `lemma`, `propositio
 Để pipeline không bị dừng đột ngột khi xử lý hàng nghìn bài báo thực tế, bộ dựng cây triển khai cơ chế bắt lỗi phòng thủ:
 
 1. **Bài báo không có mã nguồn TeX:**
-   - Được ghi nhận khi crawler M1 phát hiện bài chỉ có file PDF hoặc DOCX. Parser tạo file `hierarchy.json` rỗng chứa duy nhất node gốc `document`, ghi log cảnh báo và tiếp tục xử lý bài tiếp theo.
+   - Được ghi nhận khi crawler M1 phát hiện bài chỉ có file PDF hoặc DOCX. Parser tạo file `hierarchy.json` rỗng chứa duy nhất node gốc `document` (với `content = "Version {version} root"` hoặc chuỗi rỗng), ghi log cảnh báo và tiếp tục xử lý bài tiếp theo. Bảng `hierarchy` không sinh dòng nào cho bài này vì nút gốc không có cha.
 2. **Môi trường thiếu thẻ đóng:**
-   - Không gây crash chương trình. Parser tự động đóng môi trường tại ranh giới heading tiếp theo hoặc tại cuối tài liệu.
+   - Không gây crash chương trình. Khi một môi trường (`equation`, `figure`, `table`, `tabular`...) thiếu thẻ đóng `\end{...}` tương ứng, parser ghi log cảnh báo, tự động xác định ranh giới kết thúc tại heading tiếp theo hoặc tại cuối tài liệu, đồng thời **bổ sung thẻ đóng `\end{...}` tương ứng vào `content`** để đảm bảo chuỗi lưu trữ luôn là một khối TeX hoàn chỉnh.
 3. **Bài báo không có bất kỳ lệnh heading nào:**
    - Toàn bộ các câu văn, công thức, bảng biểu trong bài được gắn trực tiếp vào node gốc `document`.
 4. **Lệnh include trỏ đến file không tồn tại:**
    - Ghi nhận warning vào log file, thay thế bằng khoảng trắng và tiếp tục xử lý các phần khác của bài báo.
 5. **Section rỗng không có nội dung:**
-   - Vẫn tạo node `kind = "heading"`, thuộc tính `children = []`.
+   - Vẫn tạo node `kind = "heading"` với `content` là tiêu đề section, thuộc tính `children = []` (không có nút con nào bên dưới).
 
 ---
 
@@ -464,156 +476,139 @@ The detailed proof of correctness follows by induction on $|V|$.
 
 ### 8.2 File đầu ra cấu trúc cây `hierarchy.json`
 
+Cấu trúc JSON phân cấp trả về từ hàm `to_nested()` của `src/tree_builder.py` để biểu diễn trực quan cây phân cấp của một phiên bản (mỗi node chỉ gồm 4 trường chuẩn `id`, `kind`, `content`, `children`; không có các trường phụ `title`, `level`, `role`, `caption`, `label`):
+
 ```json
 {
-  "element_id": "2411-03799#doc",
-  "arxiv_id": "2411.03799",
+  "id": "root1",
   "kind": "document",
-  "content": "",
+  "content": "Version 1 root",
   "children": [
     {
-      "element_id": "2411-03799#s1",
-      "arxiv_id": "2411.03799",
+      "id": "v1-h1",
       "kind": "heading",
-      "title": "Abstract",
-      "level": 1,
-      "role": "abstract",
+      "content": "Abstract",
       "children": [
         {
-          "element_id": "2411-03799#sent1",
-          "arxiv_id": "2411.03799",
+          "id": "v1-s1",
           "kind": "sentence",
-          "content": "Graph coloring is a fundamental problem in computer science."
+          "content": "Graph coloring is a fundamental problem in computer science.",
+          "children": []
         },
         {
-          "element_id": "2411-03799#sent2",
-          "arxiv_id": "2411.03799",
+          "id": "v1-s2",
           "kind": "sentence",
-          "content": "We present a linear-time heuristic bound."
+          "content": "We present a linear-time heuristic bound.",
+          "children": []
         }
       ]
     },
     {
-      "element_id": "2411-03799#s2",
-      "arxiv_id": "2411.03799",
+      "id": "v1-h2",
       "kind": "heading",
-      "title": "Introduction",
-      "level": 1,
-      "role": "body",
+      "content": "Introduction",
       "children": [
         {
-          "element_id": "2411-03799#sent3",
-          "arxiv_id": "2411.03799",
+          "id": "v1-s3",
           "kind": "sentence",
-          "content": "Graph coloring has been studied extensively \\cite{brooks1941colouring}."
+          "content": "Graph coloring has been studied extensively \\cite{brooks1941colouring}.",
+          "children": []
         },
         {
-          "element_id": "2411-03799#sent4",
-          "arxiv_id": "2411.03799",
+          "id": "v1-s4",
           "kind": "sentence",
-          "content": "Let $G=(V, E)$ be a connected graph."
+          "content": "Let $G=(V, E)$ be a connected graph.",
+          "children": []
         },
         {
-          "element_id": "2411-03799#list1",
-          "arxiv_id": "2411.03799",
+          "id": "v1-list1",
           "kind": "itemize",
+          "content": "",
           "children": [
             {
-              "element_id": "2411-03799#it1",
-              "arxiv_id": "2411.03799",
+              "id": "v1-it1",
               "kind": "item",
+              "content": "",
               "children": [
                 {
-                  "element_id": "2411-03799#sent5",
-                  "arxiv_id": "2411.03799",
+                  "id": "v1-s5",
                   "kind": "sentence",
-                  "content": "Planar graphs are 4-colorable."
+                  "content": "Planar graphs are 4-colorable.",
+                  "children": []
                 }
               ]
             },
             {
-              "element_id": "2411-03799#it2",
-              "arxiv_id": "2411.03799",
+              "id": "v1-it2",
               "kind": "item",
+              "content": "",
               "children": [
                 {
-                  "element_id": "2411-03799#sent6",
-                  "arxiv_id": "2411.03799",
+                  "id": "v1-s6",
                   "kind": "sentence",
-                  "content": "Bipartite graphs are 2-colorable."
+                  "content": "Bipartite graphs are 2-colorable.",
+                  "children": []
                 }
               ]
             }
           ]
         },
         {
-          "element_id": "2411-03799#s3",
-          "arxiv_id": "2411.03799",
+          "id": "v1-h3",
           "kind": "heading",
-          "title": "Brooks' Bound",
-          "level": 2,
-          "role": "body",
+          "content": "Brooks' Bound",
           "children": [
             {
-              "element_id": "2411-03799#sent7",
-              "arxiv_id": "2411.03799",
+              "id": "v1-s7",
               "kind": "sentence",
-              "content": "The chromatic number satisfies the following upper bound:"
+              "content": "The chromatic number satisfies the following upper bound:",
+              "children": []
             },
             {
-              "element_id": "2411-03799#eq1",
-              "arxiv_id": "2411.03799",
+              "id": "v1-f1",
               "kind": "formula",
-              "label": "eq:brooks",
-              "content": "\\chi(G) \\leq \\Delta(G) + 1"
+              "content": "\\begin{equation}\n\\chi(G) \\leq \\Delta(G) + 1 \\label{eq:brooks}\n\\end{equation}",
+              "children": []
             },
             {
-              "element_id": "2411-03799#sent8",
-              "arxiv_id": "2411.03799",
+              "id": "v1-s8",
               "kind": "sentence",
-              "content": "where $\\Delta(G)$ denotes the maximum degree."
+              "content": "where $\\Delta(G)$ denotes the maximum degree.",
+              "children": []
             },
             {
-              "element_id": "2411-03799#fig1",
-              "arxiv_id": "2411.03799",
+              "id": "v1-fig1",
               "kind": "figure",
-              "caption": "Visualization of 4-coloring on a planar triangulation.",
-              "label": "fig:planar_graph",
-              "content": ""
+              "content": "\\begin{figure}[ht]\n\\caption{Visualization of 4-coloring on a planar triangulation.}\n\\label{fig:planar_graph}\n\\end{figure}",
+              "children": []
             }
           ]
         }
       ]
     },
     {
-      "element_id": "2411-03799#s4",
-      "arxiv_id": "2411.03799",
+      "id": "v1-h4",
       "kind": "heading",
-      "title": "Acknowledgments",
-      "level": 1,
-      "role": "acknowledgments",
+      "content": "Acknowledgments",
       "children": [
         {
-          "element_id": "2411-03799#sent9",
-          "arxiv_id": "2411.03799",
+          "id": "v1-s9",
           "kind": "sentence",
-          "content": "This research was supported by the VNU-HCM Research Grant."
+          "content": "This research was supported by the VNU-HCM Research Grant.",
+          "children": []
         }
       ]
     },
     {
-      "element_id": "2411-03799#s5",
-      "arxiv_id": "2411.03799",
+      "id": "v1-h5",
       "kind": "heading",
-      "title": "Omitted Proofs",
-      "level": 1,
-      "role": "appendix",
+      "content": "Omitted Proofs",
       "children": [
         {
-          "element_id": "2411-03799#sent10",
-          "arxiv_id": "2411.03799",
+          "id": "v1-s10",
           "kind": "sentence",
-          "content": "The detailed proof of correctness follows by induction on $|V|$."
+          "content": "The detailed proof of correctness follows by induction on $|V|$.",
+          "children": []
         }
       ]
     }
@@ -626,59 +621,59 @@ The detailed proof of correctness follows by induction on $|V|$.
 Khi xuất dữ liệu sang 6 bảng Parquet phát hành trên Hugging Face Hub theo `PARQUET_SCHEMAS` trong `src/schemas.py`, cây JSON lồng nhau ở trên được làm phẳng triệt để thành hai bảng quan hệ theo mô hình Adjacency List:
 
 #### 8.3.1 Bảng `elements`: Trích đoạn các dòng đại diện
-- **Schema (`src/schemas.py`):** `element_id: string (non-null)`, `arxiv_id: string (non-null)`, `kind: dictionary<int8, string>`, `content: string`.
-- **Đặc điểm:** Toàn bộ cột đều là kiểu nguyên thủy. Tuyệt đối không chứa nested objects hay serialized JSON blobs. Nội dung công thức, câu văn, tiêu đề heading hay caption bảng và hình đều là các chuỗi ký tự lưu tại `content`.
+- **Schema (`src/schemas.py`):** Chỉ gồm đúng 4 cột: `element_id: string (non-null)`, `arxiv_id: string (non-null)`, `kind: dictionary<int8, string>`, `content: string`.
+- **Đặc điểm:** Toàn bộ cột đều là kiểu nguyên thủy. Tuyệt đối không chứa nested objects hay serialized JSON blobs, không có các trường phụ `title`, `level`, `role`, `caption`, `label`. Tiêu đề heading lưu trực tiếp vào `content`; toàn bộ khối TeX thô của công thức toán khối và hình ảnh/bảng biểu (kèm nhãn và chú thích) được nhét nguyên vẹn vào `content`.
 
 | `element_id` | `arxiv_id` | `kind` | `content` |
 |---|---|---|---|
-| `2411-03799#doc` | `2411.03799` | `document` | `""` |
-| `2411-03799#s1` | `2411.03799` | `heading` | `"Abstract"` |
-| `2411-03799#sent1` | `2411.03799` | `sentence` | `"Graph coloring is a fundamental problem in computer science."` |
-| `2411-03799#sent2` | `2411.03799` | `sentence` | `"We present a linear-time heuristic bound."` |
-| `2411-03799#s2` | `2411.03799` | `heading` | `"Introduction"` |
-| `2411-03799#sent3` | `2411.03799` | `sentence` | `"Graph coloring has been studied extensively \cite{brooks1941colouring}."` |
-| `2411-03799#sent4` | `2411.03799` | `sentence` | `"Let $G=(V, E)$ be a connected graph."` |
-| `2411-03799#list1` | `2411.03799` | `itemize` | `""` |
-| `2411-03799#it1` | `2411.03799` | `item` | `""` |
-| `2411-03799#sent5` | `2411.03799` | `sentence` | `"Planar graphs are 4-colorable."` |
-| `2411-03799#it2` | `2411.03799` | `item` | `""` |
-| `2411-03799#sent6` | `2411.03799` | `sentence` | `"Bipartite graphs are 2-colorable."` |
-| `2411-03799#s3` | `2411.03799` | `heading` | `"Brooks' Bound"` |
-| `2411-03799#sent7` | `2411.03799` | `sentence` | `"The chromatic number satisfies the following upper bound:"` |
-| `2411-03799#eq1` | `2411.03799` | `formula` | `"\chi(G) \leq \Delta(G) + 1"` |
-| `2411-03799#sent8` | `2411.03799` | `sentence` | `"where $\Delta(G)$ denotes the maximum degree."` |
-| `2411-03799#fig1` | `2411.03799` | `figure` | `"Visualization of 4-coloring on a planar triangulation."` |
-| `2411-03799#s4` | `2411.03799` | `heading` | `"Acknowledgments"` |
-| `2411-03799#sent9` | `2411.03799` | `sentence` | `"This research was supported by the VNU-HCM Research Grant."` |
-| `2411-03799#s5` | `2411.03799` | `heading` | `"Omitted Proofs"` |
-| `2411-03799#sent10` | `2411.03799` | `sentence` | `"The detailed proof of correctness follows by induction on \|V\|."` |
+| `2411-03799#root1` | `2411.03799` | `document` | `"Version 1 root"` |
+| `2411-03799#v1-h1` | `2411.03799` | `heading` | `"Abstract"` |
+| `2411-03799#v1-s1` | `2411.03799` | `sentence` | `"Graph coloring is a fundamental problem in computer science."` |
+| `2411-03799#v1-s2` | `2411.03799` | `sentence` | `"We present a linear-time heuristic bound."` |
+| `2411-03799#v1-h2` | `2411.03799` | `heading` | `"Introduction"` |
+| `2411-03799#v1-s3` | `2411.03799` | `sentence` | `"Graph coloring has been studied extensively \cite{brooks1941colouring}."` |
+| `2411-03799#v1-s4` | `2411.03799` | `sentence` | `"Let $G=(V, E)$ be a connected graph."` |
+| `2411-03799#v1-list1` | `2411.03799` | `itemize` | `""` |
+| `2411-03799#v1-it1` | `2411.03799` | `item` | `""` |
+| `2411-03799#v1-s5` | `2411.03799` | `sentence` | `"Planar graphs are 4-colorable."` |
+| `2411-03799#v1-it2` | `2411.03799` | `item` | `""` |
+| `2411-03799#v1-s6` | `2411.03799` | `sentence` | `"Bipartite graphs are 2-colorable."` |
+| `2411-03799#v1-h3` | `2411.03799` | `heading` | `"Brooks' Bound"` |
+| `2411-03799#v1-s7` | `2411.03799` | `sentence` | `"The chromatic number satisfies the following upper bound:"` |
+| `2411-03799#v1-f1` | `2411.03799` | `formula` | `"\begin{equation}\n\chi(G) \leq \Delta(G) + 1 \label{eq:brooks}\n\end{equation}"` |
+| `2411-03799#v1-s8` | `2411.03799` | `sentence` | `"where $\Delta(G)$ denotes the maximum degree."` |
+| `2411-03799#v1-fig1` | `2411.03799` | `figure` | `"\begin{figure}[ht]\n\caption{Visualization of 4-coloring on a planar triangulation.}\n\label{fig:planar_graph}\n\end{figure}"` |
+| `2411-03799#v1-h4` | `2411.03799` | `heading` | `"Acknowledgments"` |
+| `2411-03799#v1-s9` | `2411.03799` | `sentence` | `"This research was supported by the VNU-HCM Research Grant."` |
+| `2411-03799#v1-h5` | `2411.03799` | `heading` | `"Omitted Proofs"` |
+| `2411-03799#v1-s10` | `2411.03799` | `sentence` | `"The detailed proof of correctness follows by induction on \|V\|."` |
 
 #### 8.3.2 Bảng `hierarchy`: Biểu diễn cây phiên bản 1
-- **Schema (`src/schemas.py`):** `arxiv_id: string (non-null)`, `version: int32`, `element_id: string (non-null)`, `parent_id: string (non-null)`.
-- **Đặc điểm:** Tách biệt cấu trúc phả hệ khỏi nội dung, quản lý mối quan hệ cha – con đa phiên bản bằng các cột nguyên thủy.
+- **Schema (`src/schemas.py`):** Chỉ gồm đúng 4 cột: `arxiv_id: string (non-null)`, `version: int32`, `element_id: string (non-null)`, `parent_id: string (non-null)`.
+- **Đặc điểm:** Tách biệt cấu trúc phả hệ khỏi nội dung, quản lý mối quan hệ cha – con đa phiên bản bằng các cột nguyên thủy. Nút gốc `document` (`2411-03799#root1`) không có cha nên không sinh dòng trong bảng này.
 
 | `arxiv_id` | `version` | `element_id` | `parent_id` |
 |---|---:|---|---|
-| `2411.03799` | `1` | `2411-03799#s1` | `2411-03799#doc` |
-| `2411.03799` | `1` | `2411-03799#sent1` | `2411-03799#s1` |
-| `2411.03799` | `1` | `2411-03799#sent2` | `2411-03799#s1` |
-| `2411.03799` | `1` | `2411-03799#s2` | `2411-03799#doc` |
-| `2411.03799` | `1` | `2411-03799#sent3` | `2411-03799#s2` |
-| `2411.03799` | `1` | `2411-03799#sent4` | `2411-03799#s2` |
-| `2411.03799` | `1` | `2411-03799#list1` | `2411-03799#s2` |
-| `2411.03799` | `1` | `2411-03799#it1` | `2411-03799#list1` |
-| `2411.03799` | `1` | `2411-03799#sent5` | `2411-03799#it1` |
-| `2411.03799` | `1` | `2411-03799#it2` | `2411-03799#list1` |
-| `2411.03799` | `1` | `2411-03799#sent6` | `2411-03799#it2` |
-| `2411.03799` | `1` | `2411-03799#s3` | `2411-03799#s2` |
-| `2411.03799` | `1` | `2411-03799#sent7` | `2411-03799#s3` |
-| `2411.03799` | `1` | `2411-03799#eq1` | `2411-03799#s3` |
-| `2411.03799` | `1` | `2411-03799#sent8` | `2411-03799#s3` |
-| `2411.03799` | `1` | `2411-03799#fig1` | `2411-03799#s3` |
-| `2411.03799` | `1` | `2411-03799#s4` | `2411-03799#doc` |
-| `2411.03799` | `1` | `2411-03799#sent9` | `2411-03799#s4` |
-| `2411.03799` | `1` | `2411-03799#s5` | `2411-03799#doc` |
-| `2411.03799` | `1` | `2411-03799#sent10` | `2411-03799#s5` |
+| `2411.03799` | `1` | `2411-03799#v1-h1` | `2411-03799#root1` |
+| `2411.03799` | `1` | `2411-03799#v1-s1` | `2411-03799#v1-h1` |
+| `2411.03799` | `1` | `2411-03799#v1-s2` | `2411-03799#v1-h1` |
+| `2411.03799` | `1` | `2411-03799#v1-h2` | `2411-03799#root1` |
+| `2411.03799` | `1` | `2411-03799#v1-s3` | `2411-03799#v1-h2` |
+| `2411.03799` | `1` | `2411-03799#v1-s4` | `2411-03799#v1-h2` |
+| `2411.03799` | `1` | `2411-03799#v1-list1` | `2411-03799#v1-h2` |
+| `2411.03799` | `1` | `2411-03799#v1-it1` | `2411-03799#v1-list1` |
+| `2411.03799` | `1` | `2411-03799#v1-s5` | `2411-03799#v1-it1` |
+| `2411.03799` | `1` | `2411-03799#v1-it2` | `2411-03799#v1-list1` |
+| `2411.03799` | `1` | `2411-03799#v1-s6` | `2411-03799#v1-it2` |
+| `2411.03799` | `1` | `2411-03799#v1-h3` | `2411-03799#v1-h2` |
+| `2411.03799` | `1` | `2411-03799#v1-s7` | `2411-03799#v1-h3` |
+| `2411.03799` | `1` | `2411-03799#v1-f1` | `2411-03799#v1-h3` |
+| `2411.03799` | `1` | `2411-03799#v1-s8` | `2411-03799#v1-h3` |
+| `2411.03799` | `1` | `2411-03799#v1-fig1` | `2411-03799#v1-h3` |
+| `2411.03799` | `1` | `2411-03799#v1-h4` | `2411-03799#root1` |
+| `2411.03799` | `1` | `2411-03799#v1-s9` | `2411-03799#v1-h4` |
+| `2411.03799` | `1` | `2411-03799#v1-h5` | `2411-03799#root1` |
+| `2411.03799` | `1` | `2411-03799#v1-s10` | `2411-03799#v1-h5` |
 
 > [!TIP]
 > **Đối chiếu tiêu chuẩn lưu trữ Parquet của Hugging Face Hub:**
