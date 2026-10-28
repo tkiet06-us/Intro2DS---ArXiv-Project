@@ -14,6 +14,8 @@ Quyết định thiết kế bám theo src/schemas.py:
 Tham khảo: quy tắc tách câu theo docs/latex_spec.md mục 5.1; luật dựng cây bằng ngăn xếp theo mục 4.2.
 """
 
+from __future__ import annotations
+
 import logging
 import re
 from collections import defaultdict
@@ -434,6 +436,12 @@ class _Builder:
         while len(stack) > 1 and stack[-1][0] >= level:
             stack.pop()
         stack.append((level, self.add(Kind.HEADING, title, stack[-1][1])))
+
+
+# Chuẩn hóa thân của $$...$$ và \[...\] về \begin{equation} ... \end{equation}
+# Test import hàm này nên phải có tên đúng như vậy.
+def _normalize_display_math(body: str) -> str:
+    return rf"\begin{{equation}} {body.strip()} \end{{equation}}"
 
 
 def build_tree(latex: str, version: int = 1) -> list[ParsedNode]:
