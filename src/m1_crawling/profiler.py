@@ -187,7 +187,13 @@ class Profiler:
             entry[0] += seconds
             entry[1] += n_refs
             entry[2] += n_refs_co_arxiv_id
-        logger.info("Đã đo %s: %.2fs, %d refs", arxiv_id, seconds, n_refs)
+        if n_refs:
+            logger.info(
+                "Đã đo %s: %.2fs, %d refs (%d có arXiv ID)",
+                arxiv_id, seconds, n_refs, n_refs_co_arxiv_id,
+            )
+        else:
+            logger.info("Đã đo %s: %.2fs", arxiv_id, seconds)
 
     def summary(self) -> ProfileSummary:
         """Tổng hợp số liệu đã đo.
