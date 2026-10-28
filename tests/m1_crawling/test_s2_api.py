@@ -794,3 +794,75 @@ def test_crawl_references_batch_marks_all_failed_on_batch_error(tmp_path):
 
     assert all(r.status == "failed" for r in results)
     assert not any(tmp_path.iterdir())  # không ghi file nào
+
+# ---------- fallback robustness  ----------
+
+
+def test_fetch_references_batch_fallback_failure_skips_only_that_paper(monkeypatch):
+    """Fallback GET lỗi → chỉ paper đó bị bỏ qua, không kill cả batch."""
+    from src.m1_crawling import s2_api
+
+    big_refs = [batch_ref(f"p{i}") for i in range(s2_api.S2_PAGE_SIZE)]
+    batch = [
+        batch_paper("2310.12345", big_refs),
+        batch_paper("2401.00001", [batch_ref("p1", "1706.03762")]),
+    ]
+    client, _, _ = make_client([FakeResponse(200, batch)])
+
+    def fake_fetch(arxiv_id, client=None):
+        raise s2_api.S2Error("network down")
+
+    monkeypatch.setattr(s2_api, "fetch_references", fake_fetch)
+
+    result = fetch_references_batch(["2310.12345", "2401.00001"], client)
+
+    # Paper A: không có trong result vì fallback fail → caller sẽ đánh failed.
+    assert "2310.12345" not in result
+    # Paper B: không bị ảnh hưởng, vẫn parse bình thường.
+    assert result["2401.00001"][0].s2_id == "p1"
+
+
+def test_fetch_references_batch_fallback_none_keeps_batch_refs(monkeypatch):
+    """Fallback GET trả None → giữ refs từ batch, không bị overwrite thành []."""
+    from src.m1_crawling import s2_api
+
+    big_refs = [batch_ref(f"p{i}", arxiv="1706.03762") for i in range(s2_api.S2_PAGE_SIZE)]
+    batch = [batch_paper("2310.12345", big_refs)]
+    client, _, _ = make_client([FakeResponse(200, batch)])
+
+    def fake_fetch(arxiv_id, client=None):
+        return None  # S2 nói không có bài dù batch vừa trả refs
+
+    monkeypatch.setattr(s2_api, "fetch_references", fake_fetch)
+
+    result = fetch_references_batch(["2310.12345"], client)
+
+    # Không được để result thành [] (bug cũ: `or []`).
+    assert len(result["2310.12345"]) == s2_api.S2_PAGE_SIZE
+    assert result["2310.12345"][0].arxiv_id == "1706.03762"
+
+
+def test_crawl_references_batch_marks_paper_failed_when_fallback_fails(tmp_path, monkeypatch):
+    """End-to-end: fallback fail → chỉ paper đó failed, paper khác vẫn done."""
+    from src.m1_crawling import s2_api
+
+    big_refs = [batch_ref(f"p{i}") for i in range(s2_api.S2_PAGE_SIZE)]
+    batch = [
+        batch_paper("2310.12345", big_refs),
+        batch_paper("2401.00001", [batch_ref("p1", "1706.03762")]),
+    ]
+    client, _, _ = make_client([FakeResponse(200, batch)])
+
+    def fake_fetch(arxiv_id, client=None):
+        raise s2_api.S2Error("network down")
+
+    monkeypatch.setattr(s2_api, "fetch_references", fake_fetch)
+
+    results = crawl_references_batch(["2310.12345", "2401.00001"], tmp_path, client)
+
+    # Paper A (fallback fail) → failed, không ghi file.
+    assert results[0].status == "failed"
+    assert not (tmp_path / "2310-12345" / "references.json").exists()
+    # Paper B (không fallback) → done bình thường.
+    assert results[1].status == "done"
+    assert (tmp_path / "2401-00001" / "references.json").exists()

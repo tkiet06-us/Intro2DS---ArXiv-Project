@@ -423,7 +423,18 @@ def fetch_references_batch(
                     "Bài %s có >= %d refs trong batch, fallback sang GET /references",
                     arxiv_id, S2_PAGE_SIZE,
                 )
-                refs = fetch_references(arxiv_id, client) or []
+                try:
+                    full = fetch_references(arxiv_id, client)
+                except (S2Error, requests.RequestException):
+                    # Bỏ qua bài fallback lỗi để crawl_references_batch đánh failed
+                    # riêng bài đó, các bài khác trong batch vẫn được xử lý bình thường.
+                    # Lần chạy Resume sau sẽ thử lại bài này từ đầu.
+                    logger.exception("Fallback GET thất bại cho %s", arxiv_id)
+                    continue
+                # full is None: S2 bất ngờ báo không có bài dù batch vừa trả refs.
+                # Giữ refs từ batch (đã có data thật) thay vì overwrite thành [].
+                if full is not None:
+                    refs = full
 
             result[arxiv_id] = refs
 
@@ -569,7 +580,9 @@ def crawl_references_batch(
         elif arxiv_id in failed_ids:
             result = CrawlResult(arxiv_id=arxiv_id, status="failed")
         elif arxiv_id not in fetch_results:
-            # ID sai dạng: đã log exception ở vòng validate phía trên.
+            # 1) ID sai dạng: đã log exception ở vòng validate phía trên.
+            # 2) Fallback GET thất bại trong fetch_references_batch (đã log ở đó).
+            # Cả hai đều để failed để lần Resume sau thử lại.
             result = CrawlResult(arxiv_id=arxiv_id, status="failed")
         else:
             refs = fetch_results[arxiv_id]
