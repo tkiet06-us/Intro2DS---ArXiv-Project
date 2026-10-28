@@ -135,7 +135,7 @@ def _read_braced(text: str, start: int) -> tuple[str, int]:
     return text[start:], len(text)
 
 
-def _find_env_end(text: str, pos: int, name: str) -> tuple[int, int]:
+def _find_env_end(text: str, pos: int, name: str) -> tuple[int, int, bool]:
     """Tìm `\\end{name}` tương ứng, tính cả môi trường cùng tên lồng nhau.
 
     Args:
@@ -144,19 +144,24 @@ def _find_env_end(text: str, pos: int, name: str) -> tuple[int, int]:
         name: Tên môi trường (có thể kèm dấu `*`).
 
     Returns:
-        (cuối phần nội dung, vị trí sau `\\end{name}`). Thiếu thẻ đóng thì tự đóng tại heading
-        kế tiếp hoặc cuối tài liệu (spec mục 7).
+        (cuối phần nội dung, vị trí tiếp theo, có_thẻ_đóng). Thiếu thẻ đóng thì tự đóng tại
+        heading kế tiếp hoặc cuối tài liệu (spec mục 7).
     """
     pattern = re.compile(r"\\(begin|end)\{" + re.escape(name) + r"\}")
     depth = 1
     for match in pattern.finditer(text, pos):
         depth += 1 if match.group(1) == "begin" else -1
         if depth == 0:
-            return match.start(), match.end()
+            return match.start(), match.end(), True
     logger.warning("môi trường %s thiếu \\end, tự đóng", name)
     heading = _HEADING.search(text, pos)
     end = heading.start() if heading else len(text)
-    return end, end
+    return end, end, False
+
+
+def _normalize_display_math(inner: str) -> str:
+    """Chuẩn hóa khối toán $$...$$ hoặc \\[...\\] về môi trường equation chuẩn."""
+    return rf"\begin{{equation}} {inner.strip()} \end{{equation}}"
 
 
 def _remove_command(text: str, command: str) -> str:
@@ -231,9 +236,11 @@ def _parse_blocks(text: str) -> list[_Block]:
         elif match["begin"]:
             env = match["env"]
             base = env.rstrip("*")
-            inner_end, after = _find_env_end(text, match.end(), env)
+            inner_end, after, closed = _find_env_end(text, match.end(), env)
             inner = text[match.end() : inner_end]
             raw = text[match.start() : after]
+            if not closed:
+                raw = f"{raw.rstrip()}\n\\end{{{env}}}"
             if base in DROP_ENVS:
                 take(match.start())
                 pending.append("\n\n")
@@ -271,8 +278,7 @@ def _parse_blocks(text: str) -> list[_Block]:
             take(match.start())
             flush()
             # Đưa về dạng chuẩn \begin{equation}...\end{equation} như mock và đề M2 yêu cầu.
-            inner = text[match.end() : close].strip()
-            blocks.append(_Block("formula", text=rf"\begin{{equation}} {inner} \end{{equation}}"))
+            blocks.append(_Block("formula", text=_normalize_display_math(text[match.end() : close])))
             start = pos = close + len(closer)
         elif match["appendix"]:
             take(match.start())
