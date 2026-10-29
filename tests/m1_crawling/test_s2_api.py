@@ -44,11 +44,17 @@ class FakeResponse:
 
 
 class FakeSession:
-    """Session giả: trả lần lượt các phần tử của `responses`; phần tử là Exception thì ném ra."""
+    """Session giả: trả lần lượt các phần tử của `responses`; phần tử là Exception thì ném ra.
+
+    Ghi lại song song 2 thứ:
+    - ``calls``: list (url, kwargs) — để kiểm tra payload/headers.
+    - ``methods``: list "GET"/"POST" — để kiểm tra thứ tự/tỉ lệ method
+    """
 
     def __init__(self, responses):
         self._responses = list(responses)
         self.calls = []
+        self.methods = []
 
     def _next(self, url, **kwargs):
         self.calls.append((url, kwargs))
@@ -58,9 +64,11 @@ class FakeSession:
         return item
 
     def get(self, url, **kwargs):
+        self.methods.append("GET")
         return self._next(url, **kwargs)
 
     def post(self, url, **kwargs):
+        self.methods.append("POST")
         return self._next(url, **kwargs)
 
 
@@ -636,7 +644,8 @@ def test_post_json_sends_correct_method_and_headers():
     result = client.post_json("/paper/batch", {"fields": "title"}, {"ids": ["ARXIV:1"]})
 
     assert result == [{"ok": 1}]
-    # POST phải điều hướng đến phương thức .post() trên session.
+    # Trực tiếp: phải gọi POST, không phải GET.
+    assert session.methods == ["POST"]
     assert session.calls[0][1]["headers"]["Content-Type"] == "application/json"
     assert session.calls[0][1]["headers"]["x-api-key"] == "secret"
     # json= được truyền vào, không phải data=
@@ -726,7 +735,9 @@ def test_fetch_references_batch_fallbacks_on_full_page(monkeypatch):
     result = fetch_references_batch(["2310.12345"], client)
 
     assert len(result["2310.12345"]) == S2_PAGE_SIZE
-    assert len(session.calls) == 2  # 1 POST + 1 GET fallback
+    # Fallback phải là POST (batch) rồi GET (paginate), không phải 2 POST
+    # hay GET trước POST.
+    assert session.methods == ["POST", "GET"]
 
 
 # ---------- crawl_references_batch ----------
@@ -779,7 +790,7 @@ def test_fetch_references_batch_fallback_failure_skips_only_that_paper(monkeypat
         batch_paper("2310.12345", big_refs),
         batch_paper("2401.00001", [batch_ref("p1", "1706.03762")]),
     ]
-    client, _, _ = make_client([FakeResponse(200, batch)])
+    client, session, _ = make_client([FakeResponse(200, batch)])
 
     def fake_fetch(arxiv_id, client=None):
         raise s2_api.S2Error("network down")
@@ -787,6 +798,8 @@ def test_fetch_references_batch_fallback_failure_skips_only_that_paper(monkeypat
     monkeypatch.setattr(s2_api, "fetch_references", fake_fetch)
 
     result = fetch_references_batch(["2310.12345", "2401.00001"], client)
+
+    assert session.methods == ["POST"]  # không có GET vì fetch_references bị mock raise
 
     # Paper A: không có trong result vì fallback fail → caller sẽ đánh failed.
     assert "2310.12345" not in result
