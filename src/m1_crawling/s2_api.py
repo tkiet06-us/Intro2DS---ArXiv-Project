@@ -334,38 +334,6 @@ def fetch_references(arxiv_id: str, client: S2Client | None = None) -> list[S2Re
         offset = next_offset
 
 
-def _parse_batch_reference(raw: dict[str, Any] | None) -> S2Reference | None:
-    """Đổi một phần tử trong mảng ``references`` của batch response thành S2Reference.
-
-    Batch endpoint trả về object trực tiếp (không có wrapper ``citedPaper``), nên cần
-    hàm riêng thay vì tái dùng parse_reference.
-
-    Args:
-        raw: Một phần tử trong danh sách ``references`` của batch response.
-
-    Returns:
-        S2Reference, hoặc None nếu bản ghi rỗng.
-    """
-    if not raw:
-        return None
-    raw_arxiv = (raw.get("externalIds") or {}).get("ArXiv")
-    arxiv_id = None
-    if raw_arxiv:
-        try:
-            arxiv_id = validate_arxiv_id(VERSION_SUFFIX.sub("", str(raw_arxiv).strip()))
-        except ValueError:
-            logger.warning("ArXiv ID lạ từ S2 batch: %r", raw_arxiv)
-    authors = [a["name"] for a in (raw.get("authors") or []) if a.get("name")]
-    return S2Reference(
-        s2_id=raw.get("paperId"),
-        arxiv_id=arxiv_id,
-        title=raw.get("title"),
-        authors=authors,
-        publication_date=raw.get("publicationDate"),
-        year=raw.get("year"),
-        venue=raw.get("venue"),
-    )
-
 
 def fetch_references_batch(
     arxiv_ids: list[str],
@@ -420,7 +388,7 @@ def fetch_references_batch(
                 continue
 
             raw_refs: list[dict[str, Any]] = item.get("references") or []
-            refs = [r for raw in raw_refs if (r := _parse_batch_reference(raw)) is not None]
+            refs = [r for raw in raw_refs if (r := parse_reference(raw)) is not None]
 
             # Nếu trả về đúng S2_PAGE_SIZE refs thì rất có thể bị cắt trang.
             # Fallback sang GET /references có pagination đầy đủ để không mất dữ liệu.

@@ -14,7 +14,6 @@ from src.m1_crawling.s2_api import (
     S2Error,
     S2Reference,
     S2Settings,
-    _parse_batch_reference,
     count_saved_references,
     crawl_references,
     crawl_references_batch,
@@ -661,32 +660,6 @@ def test_post_json_returns_none_on_404():
 
     assert client.post_json("/paper/batch", {}, {"ids": []}) is None
     assert len(session.calls) == 1
-
-
-# ---------- _parse_batch_reference ----------
-
-
-def test_parse_batch_reference_parses_arxiv_id():
-    raw = {"paperId": "p1", "externalIds": {"ArXiv": "1706.03762v3"}, "title": "T", "authors": []}
-
-    ref = _parse_batch_reference(raw)
-
-    assert ref is not None
-    assert ref.s2_id == "p1"
-    assert ref.arxiv_id == "1706.03762"  # version được cắt
-
-
-def test_parse_batch_reference_returns_none_for_empty():
-    assert _parse_batch_reference(None) is None
-    assert _parse_batch_reference({}) is None
-
-
-def test_parse_batch_reference_survives_null_fields():
-    ref = _parse_batch_reference({"paperId": "p1", "externalIds": None, "authors": None})
-
-    assert ref is not None
-    assert ref.arxiv_id is None
-    assert ref.authors == []
 
 
 # ---------- fetch_references_batch ----------
