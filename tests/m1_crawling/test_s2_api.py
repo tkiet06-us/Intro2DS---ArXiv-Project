@@ -877,3 +877,116 @@ def test_crawl_references_batch_marks_all_failed_on_length_mismatch(tmp_path):
 
     assert all(r.status == "failed" for r in results)
     assert not any(tmp_path.iterdir())
+
+# ---------- timing batch: amortize network time (review P2-02) ----------
+
+
+class SlowSession(FakeSession):
+    """Session giả có delay thật để kiểm tra thời gian batch được phân bổ."""
+
+    def __init__(self, responses, slow_seconds=0.05):
+        super().__init__(responses)
+        self._slow = slow_seconds
+
+    def post(self, url, **kwargs):
+        time.sleep(self._slow)
+        return super().post(url, **kwargs)
+
+
+def test_crawl_references_batch_attributes_batch_time_to_papers(tmp_path):
+    """on_result phải nhận thời gian gồm request batch, không chỉ file I/O."""
+    batch = [
+        batch_paper("2310.12345", [batch_ref("p1", "1706.03762")]),
+        batch_paper("2401.00001", []),
+    ]
+    session = SlowSession([FakeResponse(200, batch)], slow_seconds=0.10)
+    client = S2Client(S2Settings(delay_seconds=0.0, api_key="k"), session=session)
+    seen = []
+
+    crawl_references_batch(
+        ["2310.12345", "2401.00001"], tmp_path, client,
+        on_result=lambda r, s: seen.append((r.arxiv_id, s)),
+    )
+
+    # Batch mất ~0.10s, chia 2 bài → mỗi bài nhận >= 0.05s (cộng file I/O).
+    for arxiv_id, seconds in seen:
+        assert seconds >= 0.03, f"{arxiv_id} chỉ được {seconds:.3f}s, kỳ vọng >= 0.03s"
+
+
+def test_crawl_references_batch_skipped_papers_get_no_network_time(tmp_path):
+    """Bài skipped không được cộng thời gian mạng."""
+    done_dir = tmp_path / "2310-12345"
+    done_dir.mkdir()
+    (done_dir / "references.json").write_text("{}", encoding="utf-8")
+    session = SlowSession(
+        [FakeResponse(200, [batch_paper("2401.00001", [])])], slow_seconds=0.10
+    )
+    client = S2Client(S2Settings(delay_seconds=0.0, api_key="k"), session=session)
+    seen = []
+
+    crawl_references_batch(
+        ["2310.12345", "2401.00001"], tmp_path, client,
+        on_result=lambda r, s: seen.append((r.arxiv_id, r.status, s)),
+    )
+
+    by_id = {aid: (status, seconds) for aid, status, seconds in seen}
+    # Skipped: 0 network, chỉ overhead cực nhỏ.
+    assert by_id["2310.12345"][0] == "skipped"
+    assert by_id["2310.12345"][1] < 0.05
+    # Done: nhận toàn bộ ~0.10s vì chỉ có 1 bài trong to_fetch.
+    assert by_id["2401.00001"][0] == "done"
+    assert by_id["2401.00001"][1] >= 0.08
+
+
+def test_crawl_references_batch_not_found_gets_batch_time(tmp_path):
+    """not_found vẫn có mặt trong batch response → nhận phần network amortized."""
+    batch = [None, batch_paper("2401.00001", [])]
+    session = SlowSession([FakeResponse(200, batch)], slow_seconds=0.10)
+    client = S2Client(S2Settings(delay_seconds=0.0, api_key="k"), session=session)
+    seen = []
+
+    crawl_references_batch(
+        ["2310.12345", "2401.00001"], tmp_path, client,
+        on_result=lambda r, s: seen.append((r.arxiv_id, r.status, s)),
+    )
+
+    by_id = {aid: (status, seconds) for aid, status, seconds in seen}
+    # Cả 2 bài đều nhận ~0.10s / 2 = 0.05s.
+    assert by_id["2310.12345"][0] == "not_found"
+    assert by_id["2310.12345"][1] >= 0.03
+    assert by_id["2401.00001"][0] == "done"
+    assert by_id["2401.00001"][1] >= 0.03
+
+
+def test_crawl_references_batch_failed_papers_get_batch_time(tmp_path):
+    """Khi batch fail, mọi bài trong chunk vẫn nhận giờ mạng đã tiêu."""
+    session = SlowSession([FakeResponse(400)], slow_seconds=0.10)
+    client = S2Client(
+        S2Settings(delay_seconds=0.0, api_key="k", max_retries=1), session=session
+    )
+    seen = []
+
+    crawl_references_batch(
+        ["2310.12345", "2401.00001"], tmp_path, client,
+        on_result=lambda r, s: seen.append((r.arxiv_id, r.status, s)),
+    )
+
+    for arxiv_id, status, seconds in seen:
+        assert status == "failed"
+        # Batch lỗi nhưng đã tiêu ~0.10s; chia 2 bài → >= 0.03s.
+        assert seconds >= 0.03, f"{arxiv_id} chỉ được {seconds:.3f}s"
+
+
+def test_crawl_references_batch_all_skipped_does_not_divide_by_zero(tmp_path):
+    """to_fetch rỗng: không có phép chia nào cho len(to_fetch) = 0."""
+    for folder in ["2310-12345", "2401-00001"]:
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / "references.json").write_text("{}", encoding="utf-8")
+    client, session, _ = make_client([])  # không có response nào
+
+    results = crawl_references_batch(
+        ["2310.12345", "2401.00001"], tmp_path, client,
+    )
+
+    assert [r.status for r in results] == ["skipped", "skipped"]
+    assert session.calls == []

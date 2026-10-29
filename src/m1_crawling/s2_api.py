@@ -494,6 +494,10 @@ def crawl_references_batch(
     thay vì gọi đơn lẻ từng bài. Bài đã có references.json (resume) được bỏ qua trước khi
     gộp vào batch để không tốn request.
 
+    Thời gian trả cho ``on_result`` = thời gian request batch chia đều (amortized)
+    cho mỗi bài trong ``to_fetch`` + thời gian ghi file riêng của bài đó. Bài
+    ``skipped`` không nhận phần network vì không có request nào cho chúng.
+
     Args:
         arxiv_ids: Danh sách mã arXiv chuẩn, theo thứ tự đầu vào.
         root: Thư mục gốc chứa các thư mục bài, ví dụ data/raw.
@@ -526,7 +530,12 @@ def crawl_references_batch(
     # Gọi batch cho những bài cần crawl.
     fetch_results: dict[str, list[S2Reference] | None] = {}
     failed_ids: set[str] = set()
+    # Một batch call phục vụ nhiều bài cùng lúc nên không đo riêng được từng bài.
+    # Amortize: tổng thời gian mạng của batch chia đều cho số bài trong to_fetch,
+    # để avg_seconds_per_paper của Profiler phản ánh cả network.
+    batch_seconds_per_paper = 0.0
     if to_fetch:
+        batch_started = time.perf_counter()
         try:
             fetch_results = fetch_references_batch(to_fetch, client)
         except (S2Error, requests.RequestException):
@@ -534,22 +543,32 @@ def crawl_references_batch(
             # Cả nhóm failed; fetch_results để trống, vòng lặp bên dưới check
             # failed_ids trước nên không cần sentinel.
             failed_ids = set(to_fetch)
+        finally:
+            # to_fetch không rỗng nên không chia cho 0.
+            batch_seconds_per_paper = (time.perf_counter() - batch_started) / len(to_fetch)
 
     # Duyệt theo thứ tự đầu vào để kết quả khớp arxiv_ids.
     for arxiv_id in arxiv_ids:
         started = time.perf_counter()
         if arxiv_id in skipped_set:
+            # Không có request cho bài skipped → không cộng giờ mạng.
             result = CrawlResult(arxiv_id=arxiv_id, status="skipped")
+            api_seconds = 0.0
         elif arxiv_id in failed_ids:
+            # Batch call đã được gửi nhưng lỗi — mạng đã tiêu → cộng giờ mạng.
             result = CrawlResult(arxiv_id=arxiv_id, status="failed")
+            api_seconds = batch_seconds_per_paper
         elif arxiv_id not in fetch_results:
             # 1) ID sai dạng: đã log exception ở vòng validate phía trên.
             # 2) Fallback GET thất bại trong fetch_references_batch (đã log ở đó).
             # Cả hai đều để failed để lần Resume sau thử lại.
             result = CrawlResult(arxiv_id=arxiv_id, status="failed")
+            api_seconds = 0.0
         else:
             refs = fetch_results[arxiv_id]
             paper_dir = root / to_folder_name(arxiv_id)
+            # not_found cũng đã tiêu network (S2 trả null) → vẫn cộng giờ mạng.
+            api_seconds = batch_seconds_per_paper
             try:
                 if refs is None:
                     logger.warning("S2 không có bài %s", arxiv_id)
@@ -577,7 +596,8 @@ def crawl_references_batch(
 
         results.append(result)
         if on_result is not None:
-            on_result(result, time.perf_counter() - started)
+            # Tổng thời gian bài = giờ mạng amortized + giờ ghi file riêng của bài.
+            on_result(result, api_seconds + (time.perf_counter() - started))
 
     return results
 
