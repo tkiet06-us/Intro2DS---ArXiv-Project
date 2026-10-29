@@ -6,6 +6,8 @@ crawler:
 s2_api:
   base_url: "https://api.semanticscholar.org/graph/v1"
   delay_seconds: 1
+  timeout: 30
+  max_retries: 5
 paths:
   raw: "data/raw"
   processed: "data/processed"
