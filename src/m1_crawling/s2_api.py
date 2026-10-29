@@ -552,14 +552,8 @@ def crawl_references_batch(
         if resume and target.exists():
             skipped_set.add(arxiv_id)
         else:
-            # Validate trước khi đưa vào batch để bài ID sai không làm hỏng cả nhóm.
-            try:
-                validate_arxiv_id(arxiv_id)
-                to_fetch.append(arxiv_id)
-            except ValueError:
-                logger.exception("Lỗi khi lấy reference của %s", arxiv_id)
-                skipped_set.discard(arxiv_id)  # không trong skipped
-                # Đánh dấu failed ngay; sẽ thu thập khi duyệt arxiv_ids theo thứ tự.
+            # Không cần validate lại
+            to_fetch.append(arxiv_id)
 
     # Gọi batch cho những bài cần crawl.
     fetch_results: dict[str, list[S2Reference] | None] = {}
