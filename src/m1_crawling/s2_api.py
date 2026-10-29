@@ -601,6 +601,25 @@ def crawl_references_batch(
 
     return results
 
+def _is_done(root: Path, arxiv_id: str) -> bool:
+    """Kiểm tra bài đã có references.json chưa (dùng cho resume).
+
+    Args:
+        root: Thư mục gốc chứa các thư mục bài (tên dạng "yymm-id").
+        arxiv_id: Mã arXiv chuẩn.
+
+    Returns:
+        True nếu references.json đã tồn tại.
+        False nếu file chưa có, hoặc ID sai dạng (để lọt vào pending; lúc đó
+        crawl_references_batch sẽ tự log và đánh failed).
+    """
+    try:
+        target = root / to_folder_name(arxiv_id) / "references.json"
+    except ValueError:
+        # ID sai dạng: coi như chưa xong để lọt vào pending. crawl_references_batch
+        # sẽ log và đánh failed riêng bài đó, các bài khác vẫn chạy.
+        return False
+    return target.exists()
 
 def run_s2_stage(
     arxiv_ids: Iterable[str],
@@ -615,31 +634,50 @@ def run_s2_stage(
     Hàm này không phụ thuộc vào bước tải source của arXiv (S2 chỉ cần arxiv_id), nên có thể
     chạy trong một luồng riêng song song với crawler arXiv mà không vi phạm giới hạn nào.
 
-    Chiến lược tối ưu: gom arxiv_ids thành từng nhóm ``batch_size`` bài và gọi
-    POST /paper/batch thay vì GET /references đơn lẻ. Bài có >= S2_PAGE_SIZE refs sẽ được
-    fallback tự động sang GET /references có pagination.
+    Resume được lọc TRƯỚC khi chia chunk, để bài pending rải rác gom được vào ít request
+    nhất có thể. ``crawl_references_batch`` được gọi với ``resume=False`` (đã lọc ở ngoài).
+
+    Ghi chú thứ tự ``on_result``: các bài pending được báo trước (theo thứ tự chunk),
+    sau đó các bài skipped (theo thứ tự đầu vào).
 
     Args:
         arxiv_ids: Các mã arXiv chuẩn (list hay generator đều được).
         root: Thư mục gốc chứa các thư mục bài (tên dạng "yymm-id"), ví dụ data/raw.
         client: Client dùng chung cho cả dải; None thì tạo từ cấu hình mặc định.
-        on_result: Hàm gọi sau mỗi bài với (kết quả, số giây xử lý), ví dụ để ghi vào Profiler.
-            Bên gọi cần lọc bài "skipped" trước khi ghi vào Profiler để thời gian trung bình
-            mỗi bài chính xác.
+        on_result: Hàm gọi sau mỗi bài với (kết quả, số giây xử lý). Bài skipped được
+            báo với 0.0 giây để caller đếm đủ số bài dù chúng không tiêu network.
         resume: True thì bỏ qua bài đã có references.json.
-        batch_size: Số bài gom vào một lần POST; mặc định BATCH_SIZE (500).
+        batch_size: Số bài mỗi chunk gửi xuống crawl_references_batch. Dùng làm
+            checkpoint granularity khi giữa dải có 1 chunk lỗi.
 
     Returns:
-        Kết quả của từng bài theo thứ tự đầu vào.
+        Kết quả của từng bài theo đúng thứ tự đầu vào.
     """
     client = client or S2Client()
     all_ids = list(arxiv_ids)
-    results: list[CrawlResult] = []
 
-    for chunk_start in range(0, len(all_ids), batch_size):
-        chunk = all_ids[chunk_start : chunk_start + batch_size]
-        chunk_results = crawl_references_batch(chunk, root, client, on_result, resume)
-        results.extend(chunk_results)
+    # Filter resume TRƯỚC khi chia chunk để pending rải rác gom được vào ít POST nhất.
+    if resume:
+        pending = [aid for aid in all_ids if not _is_done(root, aid)]
+    else:
+        pending = all_ids
+
+    by_id: dict[str, CrawlResult] = {}
+    for start in range(0, len(pending), batch_size):
+        chunk = pending[start : start + batch_size]
+        # resume=False vì đã filter ở trên, tránh kiểm tra đĩa hai lần.
+        for result in crawl_references_batch(chunk, root, client, on_result, resume=False):
+            by_id[result.arxiv_id] = result
+
+    # Merge theo đúng thứ tự all_ids; bài không có trong by_id là bài skipped.
+    results: list[CrawlResult] = []
+    for arxiv_id in all_ids:
+        if arxiv_id not in by_id:
+            skipped = CrawlResult(arxiv_id=arxiv_id, status="skipped")
+            by_id[arxiv_id] = skipped
+            if on_result is not None:
+                on_result(skipped, 0.0)
+        results.append(by_id[arxiv_id])
 
     return results
 

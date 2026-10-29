@@ -990,3 +990,48 @@ def test_crawl_references_batch_all_skipped_does_not_divide_by_zero(tmp_path):
 
     assert [r.status for r in results] == ["skipped", "skipped"]
     assert session.calls == []
+
+# ---------- resume filter trước chunking (review P2-02) ----------
+
+
+def test_run_s2_stage_filters_resume_before_chunking(tmp_path):
+    """9/10 bài done rải rác → chỉ 1 POST, thay vì 5-10 POST như trước.
+
+    Dùng 10 bài thay vì 5000 để test chạy nhanh (< 100ms), vẫn prove được
+    nguyên lý: nếu code cũ (chunk trước, filter sau), batch_size=5 chia
+    10 bài thành 2 chunk → 2 POST dù chỉ còn 1 bài pending.
+    """
+    ids = [f"2310.{i:05d}" for i in range(10)]
+    # 9 bài done ở vị trí rải rác, để lại vị trí 3 làm pending duy nhất.
+    for i in [0, 1, 2, 4, 5, 6, 7, 8, 9]:
+        folder = tmp_path / f"2310-{i:05d}"
+        folder.mkdir()
+        (folder / "references.json").write_text("{}", encoding="utf-8")
+
+    batch = [batch_paper(ids[3], [batch_ref("p1", "1706.03762")])]
+    client, session, _ = make_client([FakeResponse(200, batch)])
+
+    results = run_s2_stage(ids, tmp_path, client, batch_size=5)
+
+    # 1 POST duy nhất — pending rải rác được gom lại.
+    assert len(session.calls) == 1
+    # Merge giữ đúng thứ tự input.
+    assert [r.status for r in results] == (
+        ["skipped"] * 3 + ["done"] + ["skipped"] * 6
+    )
+
+
+def test_run_s2_stage_all_done_makes_no_request(tmp_path):
+    """Tất cả bài đã done → 0 POST, 0 network."""
+    for i in range(3):
+        folder = tmp_path / f"2310-{i:05d}"
+        folder.mkdir()
+        (folder / "references.json").write_text("{}", encoding="utf-8")
+    client, session, _ = make_client([])  # không có response nào
+
+    results = run_s2_stage(
+        [f"2310.{i:05d}" for i in range(3)], tmp_path, client
+    )
+
+    assert [r.status for r in results] == ["skipped"] * 3
+    assert session.calls == []
