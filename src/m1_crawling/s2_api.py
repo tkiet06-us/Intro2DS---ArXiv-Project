@@ -557,20 +557,15 @@ def crawl_references_batch(
 
     # Gọi batch cho những bài cần crawl.
     fetch_results: dict[str, list[S2Reference] | None] = {}
+    failed_ids: set[str] = set()
     if to_fetch:
         try:
             fetch_results = fetch_references_batch(to_fetch, client)
         except (S2Error, requests.RequestException):
             logger.exception("Lỗi batch khi lấy references; chuyển toàn nhóm sang failed")
-            # Đánh dấu tất cả bài trong nhóm là failed.
-            for aid in to_fetch:
-                fetch_results[aid] = []  # sentinel rỗng; phân biệt bằng cờ failed bên dưới
-            # Đánh dấu riêng để ghi failed thay vì xử lý bình thường.
+            # Cả nhóm failed; fetch_results để trống, vòng lặp bên dưới check
+            # failed_ids trước nên không cần sentinel.
             failed_ids = set(to_fetch)
-        else:
-            failed_ids: set[str] = set()
-    else:
-        failed_ids: set[str] = set()
 
     # Duyệt theo thứ tự đầu vào để kết quả khớp arxiv_ids.
     for arxiv_id in arxiv_ids:
