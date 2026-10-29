@@ -407,6 +407,12 @@ def fetch_references_batch(
                 result[aid] = None
             continue
 
+        # Raise để caller đánh failed cả chunk và retry lần sau, thay vì lưu data có thể sai.
+        if len(batch_resp) != len(chunk):
+            raise S2Error(
+                f"Batch trả {len(batch_resp)} phần tử, mong đợi {len(chunk)}"
+            )
+
         for arxiv_id, item in zip(chunk, batch_resp):
             if item is None:
                 # S2 không có bài này.

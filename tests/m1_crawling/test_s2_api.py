@@ -866,3 +866,41 @@ def test_crawl_references_batch_marks_paper_failed_when_fallback_fails(tmp_path,
     # Paper B (không fallback) → done bình thường.
     assert results[1].status == "done"
     assert (tmp_path / "2401-00001" / "references.json").exists()
+
+# ---------- bảo vệ zip() khi batch trả sai số phần tử ----------
+
+
+def test_fetch_references_batch_raises_when_fewer_items_than_ids():
+    """Batch trả ít hơn số ID yêu cầu → S2Error thay vì zip cắt ngầm."""
+    batch = [batch_paper("2310.12345", [batch_ref("p1", "1706.03762")])]  # 1 item cho 2 IDs
+    client, _, _ = make_client([FakeResponse(200, batch)])
+
+    with pytest.raises(S2Error, match="1 phần tử, mong đợi 2"):
+        fetch_references_batch(["2310.12345", "2401.00001"], client)
+
+
+def test_fetch_references_batch_raises_when_more_items_than_ids():
+    """Batch trả nhiều hơn số ID yêu cầu → S2Error thay vì bỏ qua item dư."""
+    batch = [
+        batch_paper("2310.12345", []),
+        batch_paper("2401.00001", []),
+        batch_paper("2402.99999", []),
+    ]
+    client, _, _ = make_client([FakeResponse(200, batch)])
+
+    with pytest.raises(S2Error, match="3 phần tử, mong đợi 2"):
+        fetch_references_batch(["2310.12345", "2401.00001"], client)
+
+
+def test_crawl_references_batch_marks_all_failed_on_length_mismatch(tmp_path):
+    """Batch trả sai số phần tử → cả chunk failed, không ghi file nào.
+
+    Cùng cơ chế với batch lỗi HTTP: caller coi toàn chunk là failed để lần Resume
+    sau retry, thay vì lưu dữ liệu có thể bị ghép sai vị trí.
+    """
+    client, _, _ = make_client([FakeResponse(200, [])])  # 0 item cho 2 IDs
+
+    results = crawl_references_batch(["2310.12345", "2401.00001"], tmp_path, client)
+
+    assert all(r.status == "failed" for r in results)
+    assert not any(tmp_path.iterdir())
