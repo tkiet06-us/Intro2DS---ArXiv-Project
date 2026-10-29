@@ -700,7 +700,7 @@ def test_fetch_references_batch_marks_null_item_as_not_found():
     assert result["2401.00001"] == []
 
 
-def test_fetch_references_batch_splits_into_chunks(monkeypatch):
+def test_fetch_references_batch_splits_into_chunks():
     # Kiểm tra chunk chia đúng khi có nhiều hơn BATCH_SIZE bài.
     n = BATCH_SIZE + 1
     ids = [f"2310.{str(i).zfill(5)}" for i in range(n)]
@@ -718,7 +718,7 @@ def test_fetch_references_batch_splits_into_chunks(monkeypatch):
     assert len(session.calls) == 2  # 2 POST requests
 
 
-def test_fetch_references_batch_fallbacks_on_full_page(monkeypatch):
+def test_fetch_references_batch_fallbacks_on_full_page():
     # Bài có đúng S2_PAGE_SIZE refs trong batch → fallback sang GET /references.
     from src.m1_crawling.s2_api import S2_PAGE_SIZE
 
