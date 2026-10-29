@@ -778,6 +778,37 @@ def test_crawl_references_batch_marks_all_failed_on_batch_error(tmp_path):
     assert all(r.status == "failed" for r in results)
     assert not any(tmp_path.iterdir())  # không ghi file nào
 
+def test_crawl_references_batch_all_skipped_makes_no_request(tmp_path):
+    """Resume 100%: to_fetch rỗng → không POST nào, tất cả skipped, on_result vẫn được gọi.
+
+    Cover nhánh ``if to_fetch:`` False trong crawl_references_batch — nếu ai đó
+    refactor và vô tình chia cho ``len(to_fetch) == 0``, test này sẽ bắt.
+    """
+    # 3 bài đều đã có references.json → to_fetch rỗng.
+    for i in range(3):
+        folder = tmp_path / f"2310-{i:05d}"
+        folder.mkdir()
+        (folder / "references.json").write_text("{}", encoding="utf-8")
+
+    client, session, _ = make_client([])  # không cấu hình response nào
+
+    seen = []
+    results = crawl_references_batch(
+        [f"2310.{i:05d}" for i in range(3)],
+        tmp_path,
+        client,
+        on_result=lambda r, s: seen.append((r.arxiv_id, r.status, s)),
+    )
+
+    # 1. Tất cả skipped, không gọi API.
+    assert [r.status for r in results] == ["skipped"] * 3
+    assert session.calls == []
+    # 2. on_result vẫn được gọi cho mỗi bài, kèm giây xử lý rất nhỏ
+    #    (chỉ overhead của loop, không có network).
+    assert [aid for aid, _, _ in seen] == [f"2310.{i:05d}" for i in range(3)]
+    assert all(status == "skipped" for _, status, _ in seen)
+    assert all(seconds < 0.05 for _, _, seconds in seen)
+
 # ---------- fallback robustness  ----------
 
 
