@@ -538,7 +538,6 @@ def test_run_s2_stage_isolates_failures_and_reports_every_paper(tmp_path):
 
     assert all(r.status == "failed" for r in results)
     assert [status for status, _ in seen] == ["failed", "failed", "failed"]
-    assert all(seconds >= 0 for _, seconds in seen)
 
 
 def test_run_s2_stage_batch_success_and_not_found(tmp_path):
@@ -878,7 +877,7 @@ def test_crawl_references_batch_marks_all_failed_on_length_mismatch(tmp_path):
     assert all(r.status == "failed" for r in results)
     assert not any(tmp_path.iterdir())
 
-# ---------- timing batch: amortize network time (review P2-02) ----------
+# ---------- timing batch: amortize network time ----------
 
 
 class SlowSession(FakeSession):
@@ -976,6 +975,33 @@ def test_crawl_references_batch_failed_papers_get_batch_time(tmp_path):
         # Batch lỗi nhưng đã tiêu ~0.10s; chia 2 bài → >= 0.03s.
         assert seconds >= 0.03, f"{arxiv_id} chỉ được {seconds:.3f}s"
 
+def test_run_s2_stage_propagates_batch_time_to_on_result(tmp_path):
+    """run_s2_stage phải forward thời gian batch qua on_result.
+
+    Test này bảo vệ khỏi regression: nếu ai đó sửa run_s2_stage để gọi
+    on_result với seconds=0 (hoặc buffer rồi báo sau khi mất context thời gian),
+    thời gian network của batch sẽ bị mất khỏi Profiler.
+    """
+    batch = [
+        batch_paper("2310.12345", [batch_ref("p1", "1706.03762")]),
+        batch_paper("2401.00001", []),
+    ]
+    session = SlowSession([FakeResponse(200, batch)], slow_seconds=0.10)
+    client = S2Client(S2Settings(delay_seconds=0.0, api_key="k"), session=session)
+    seen = []
+
+    run_s2_stage(
+        ["2310.12345", "2401.00001"], tmp_path, client,
+        on_result=lambda r, s: seen.append((r.arxiv_id, r.status, s)),
+    )
+
+    by_id = {aid: (status, secs) for aid, status, secs in seen}
+    # Batch mất ~0.10s, chia 2 bài → mỗi bài nhận >= 0.03s (margin rộng).
+    for arxiv_id in ["2310.12345", "2401.00001"]:
+        status, secs = by_id[arxiv_id]
+        assert status == "done"
+        assert secs >= 0.03, f"{arxiv_id} chỉ được {secs:.3f}s, kỳ vọng >= 0.03s"
+
 
 def test_crawl_references_batch_all_skipped_does_not_divide_by_zero(tmp_path):
     """to_fetch rỗng: không có phép chia nào cho len(to_fetch) = 0."""
@@ -991,7 +1017,7 @@ def test_crawl_references_batch_all_skipped_does_not_divide_by_zero(tmp_path):
     assert [r.status for r in results] == ["skipped", "skipped"]
     assert session.calls == []
 
-# ---------- resume filter trước chunking (review P2-02) ----------
+# ---------- resume filter trước chunking ----------
 
 
 def test_run_s2_stage_filters_resume_before_chunking(tmp_path):
