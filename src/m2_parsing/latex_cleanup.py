@@ -91,7 +91,7 @@ _TOKEN_RE = re.compile(
             r"(?P<verb>\\verb\*?(?P<vdelim>[^a-zA-Z0-9]).*?(?P=vdelim))",
             r"(?P<url>\\(?:url|path)\{[^{}\n]*\})",
             r"(?P<href>\\href\{[^{}\n]*\}\{[^{}\n]*\})",
-            r"(?P<inlinecode>\\(?:lstinline|mintinline)(?:\[[^\]\n]*\])?(?:\{[^{}\n]*\}|(?P<cdelim>[^a-zA-Z0-9{]).*?(?P=cdelim)))",
+            r"(?P<inlinecode>\\lstinline(?:\[[^\]\n]*\])?(?:\{[^{}\n]*\}|(?P<cdelim1>[^a-zA-Z0-9{]).*?(?P=cdelim1))|\\mintinline(?:\[[^\]\n]*\])?\{[^{}\n]*\}(?:\{[^{}\n]*\}|(?P<cdelim2>[^a-zA-Z0-9{]).*?(?P=cdelim2)))",
 
             # --- Toán khối/nội dòng cần CHUẨN HÓA ---
             r"(?P<dollars>\$\$(?P<dd_body>.*?)\$\$)",

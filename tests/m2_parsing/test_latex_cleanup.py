@@ -1,7 +1,8 @@
 """Test cho src/m2_parsing/latex_cleanup.py (task P2-05).
 
 Chia theo nhóm: (1) xóa định dạng thừa, (2) chuẩn hóa toán, (3) vùng phải giữ NGUYÊN
-(đúng danh sách "Điều cấm" ở latex_spec.md Mục 1.2), (4) phòng thủ, (5) tương thích mock.
+(đúng danh sách "Điều cấm" ở latex_spec.md Mục 1.2), (4) phòng thủ, (5) tương thích mock,
+(6) bảo vệ inline verbatim/URL và math_only flag (regression).
 """
 
 import ast
@@ -11,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.m2_parsing.latex_cleanup import cleanup_latex
+from src.m2_parsing.latex_cleanup import cleanup_latex, normalize_math
 
 
 # ---------------------------------------------------------------- (1) Xóa định dạng thừa
@@ -100,9 +101,10 @@ def test_bracket_display_becomes_equation():
     assert cleanup_latex("x \\[ a+b \\] y") == "x \\begin{equation} a+b \\end{equation} y"
 
 
-def test_multiline_display_keeps_newline_style_of_spec_example():
+def test_multiline_display_forces_canonical_single_line_format():
+    # Canonical format cho P2-05 phải luôn là single-line \begin{equation} {body} \end{equation}
     out = cleanup_latex("$$\na = b \\label{eq:1}\n$$")
-    assert out == "\\begin{equation}\na = b \\label{eq:1}\n\\end{equation}"
+    assert out == "\\begin{equation} a = b \\label{eq:1} \\end{equation}"
 
 
 def test_paren_inline_and_math_env_become_dollars():
@@ -306,3 +308,34 @@ def test_mock_equation_is_exactly_the_formula_node_content(mock):
     formula = "\\begin{equation} E = mc^2 \\end{equation}"
     assert formula in cleanup_latex(mock.TEX_A_V1)
     assert cleanup_latex("$$E = mc^2$$") == formula
+
+
+# ---------------------------------------------------------------- (6) PR Review: Regression Tests
+def test_inline_verbatim_protects_percent_sign():
+    # Ký tự % bên trong \verb không được coi là comment
+    src = "Use \\verb|a%b| command."
+    assert cleanup_latex(src) == src
+
+    src2 = "And \\verb*+a% b+ also."
+    assert cleanup_latex(src2) == src2
+
+
+def test_url_commands_protect_percent_sign():
+    # %20 trong URL rất phổ biến
+    src = "Link: \\url{http://a/%20} and \\href{http://a/%20}{link}"
+    assert cleanup_latex(src) == src
+
+
+def test_inline_code_protects_percent_sign():
+    # Lệnh lstinline và mintinline
+    src = "\\lstinline{a%b} and \\mintinline[c]{python}|a%b|"
+    assert cleanup_latex(src) == src
+
+
+def test_normalize_math_only_modifies_math():
+    # normalize_math phải giữ nguyên định dạng và comment, chỉ đổi $$ -> \begin{equation}
+    src = "\\centering $$x^2$$\n% A comment\n\\bf Text"
+    out = normalize_math(src)
+    assert out == "\\centering \\begin{equation} x^2 \\end{equation}\n% A comment\n\\bf Text"
+    assert "\\bf" in out
+    assert "% A comment" in out
