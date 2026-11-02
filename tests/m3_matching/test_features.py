@@ -6,6 +6,7 @@ import pytest
 from src.m3_matching.features import (
     FEATURE_NAMES,
     author_key,
+    _normalize_arxiv_id,
     build_feature_matrix,
     build_features,
     char_ngrams,
@@ -437,3 +438,20 @@ def test_identical_short_titles_still_have_full_trigram_overlap():
     vector = build_features(make_entry(title="AI"), make_candidate(ref_title="AI"))
 
     assert feature(vector, "title_char3_jaccard") == 1.0
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1706.03762", "1706.03762"),                  # đã chuẩn
+        ("1706.03762v5", "1706.03762"),                # strip version
+        ("arXiv:1706.03762", "1706.03762"),            # strip prefix
+        ("ARXIV:1706.03762V2", "1706.03762"),          # case-insensitive
+        ("hep-th/9901001v3", "hep-th/9901001"),        # style cũ + version
+        ("math.GT/0309136", "math.gt/0309136"),        # lowercase cho style cũ
+        ("", ""),                                       # rỗng
+        (None, ""),                                     # None (defensive)
+    ],
+)
+def test_normalize_arxiv_id(raw, expected):
+    assert _normalize_arxiv_id(raw) == expected

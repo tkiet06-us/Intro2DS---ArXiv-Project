@@ -251,6 +251,24 @@ def _prepare_entry(entry: Bibtex, raw_text: str | None = None) -> _Prepared:
         arxiv_ids=frozenset(extract_arxiv_ids(" ".join(f for f in text_fields if f))),
     )
 
+def _normalize_arxiv_id(raw: str | None) -> str:
+    """Chuẩn hóa ID arXiv về dạng canonical: bỏ prefix "arXiv:", version suffix, hạ chữ thường.
+
+    Dùng cùng logic với phía entry (`extract_arxiv_ids`) để hai bên so sánh được với nhau.
+    Chuỗi không nhận ra là ID hợp lệ thì chỉ hạ chữ thường và strip version (fallback).
+
+    Args:
+        raw: ID thô từ S2, ví dụ "1706.03762v5", "arXiv:1706.03762", "hep-th/9901001".
+
+    Returns:
+        ID canonical, ví dụ "1706.03762", "hep-th/9901001"; rỗng nếu raw rỗng/None.
+    """
+    ids = extract_arxiv_ids(raw)
+    if ids:
+        # ref_arxiv_id là một trường đơn nên chỉ có một ID; sorted để kết quả
+        # deterministic nếu dữ liệu lỗi có nhiều ID trong một chuỗi.
+        return sorted(ids)[0]
+    return VERSION_SUFFIX_PATTERN.sub("", (raw or "").strip().lower())
 
 def _prepare_candidate(candidate: Reference) -> _Prepared:
     title = preprocess(candidate.ref_title)
@@ -260,7 +278,7 @@ def _prepare_candidate(candidate: Reference) -> _Prepared:
         char3=frozenset(char_ngrams(title)),
         authors=tuple(author_keys(candidate.ref_authors)),
         year=parse_year(candidate.ref_submission_date),
-        arxiv_id=candidate.ref_arxiv_id.lower(),
+        arxiv_id=_normalize_arxiv_id(candidate.ref_arxiv_id),
     )
 
 
