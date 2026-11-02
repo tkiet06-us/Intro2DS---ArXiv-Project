@@ -329,6 +329,27 @@ def test_feature_matrix_matches_single_pair_function():
 
     assert tensor[0, 0].tolist() == pytest.approx(single)
 
+def test_feature_matrix_is_equivariant_to_candidate_order():
+    """Đảo thứ tự candidates -> tensor đảo theo cùng hoán vị."""
+    entries = [
+        make_entry(citation_key="a", title="Attention Is All You Need", year=2017),
+        make_entry(citation_key="b", title="Deep Residual Learning", year=2016),
+    ]
+    candidates = [
+        make_candidate(ref_arxiv_id="1706.03762", ref_title="Attention is all you need"),
+        make_candidate(
+            ref_arxiv_id="1512.03385",
+            ref_title="Deep Residual Learning for Image Recognition",
+        ),
+        make_candidate(ref_arxiv_id="1810.04805", ref_title="BERT Pre-training"),
+    ]
+    perm = [2, 0, 1]
+
+    base = build_feature_matrix(entries, candidates)
+    shuffled = build_feature_matrix(entries, [candidates[i] for i in perm])
+
+    np.testing.assert_allclose(shuffled, base[:, perm, :])
+
 
 @pytest.mark.parametrize(("m", "n"), [(0, 3), (3, 0), (0, 0)])
 def test_feature_matrix_handles_empty_sides(m, n):
