@@ -106,6 +106,19 @@ def test_author_key_same_person_different_formats(name):
 def test_author_key_keeps_last_surname_token():
     assert author_key("van der Waals, J.") == author_key("J. van der Waals") == ("waals", "j")
 
+def test_author_key_strips_latex_braces():
+    assert author_key(r'M{\"u}ller, Hans') == ("muller", "h")
+
+
+def test_author_key_strips_latex_braces_with_nested_closing_brace():
+    # Erd{\H{o}}s -> ascii_fold ra "erd{o}s" (còn cả "{" và "}" sau khi fold).
+    assert author_key(r'Erd{\H{o}}s, P.') == ("erdos", "p")
+
+
+def test_author_key_handles_accents_without_braces():
+    # Trường hợp \c{c} -> ascii_fold đã xử lý gọn, không còn ngoặc nào.
+    assert author_key(r'Fran\c{c}ois, M.') == ("francois", "m")
+
 
 @pytest.mark.parametrize("name", ["et al.", "others", "", "  "])
 def test_author_key_ignores_non_names(name):
@@ -340,6 +353,16 @@ def test_feature_matrix_uses_raw_texts_and_checks_their_length():
 def test_author_lists_in_different_formats_match_on_first_author_and_surnames():
     entry = make_entry(authors=["Vaswani, A.", "Shazeer, N."])
     candidate = make_candidate(ref_authors=["Ashish Vaswani", "Noam Shazeer"])
+
+    vector = build_features(entry, candidate)
+
+    assert feature(vector, "first_author_match") == 1.0
+    assert feature(vector, "author_surname_jaccard") == 1.0
+
+def test_accented_authors_match_between_bibtex_and_s2():
+    # BibTeX hay viết Müller bằng LaTeX "M{\"u}ller"; S2 trả "Müller" (Unicode).
+    entry = make_entry(authors=[r'M{\"u}ller, K.', r'Erd{\H{o}}s, P.'])
+    candidate = make_candidate(ref_authors=["Klaus Müller", "Paul Erdős"])
 
     vector = build_features(entry, candidate)
 
