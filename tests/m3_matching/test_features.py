@@ -168,7 +168,7 @@ def test_parse_year_does_not_treat_generic_4_digit_numbers_as_arxiv_id():
 @pytest.mark.parametrize("empty", [None, ""])
 def test_parse_year_handles_empty_input(empty):
     assert parse_year(empty) is None
-    
+
 # ---- độ giống ----
 
 
@@ -252,6 +252,21 @@ def test_arxiv_id_in_url_with_version_suffix():
 
     assert feature(build_features(entry, make_candidate()), "arxiv_id_in_fields") == 1.0
 
+def test_candidate_id_normalized_via_model_construct_bypass():
+    # Defense-in-depth: nếu ai đó dùng model_construct (bypass Pydantic) hoặc load
+    # parquet thuần, ref_arxiv_id có thể chứa version/prefix. _prepare_candidate phải
+    # normalize để vẫn match entry (canonical).
+    entry = make_entry(journal="arXiv preprint arXiv:1706.03762")
+    candidate = Reference.model_construct(
+        arxiv_id=PAPER_ID,
+        ref_arxiv_id="1706.03762v5",
+        ref_title="",
+        ref_authors=[],
+        ref_submission_date="",
+        ref_s2_id="",
+    )
+
+    assert feature(build_features(entry, candidate), "arxiv_id_in_fields") == 1.0
 
 def test_arxiv_id_does_not_match_inside_longer_id():
     entry = make_entry(journal="arXiv:2310.12345")
