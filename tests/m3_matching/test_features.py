@@ -131,6 +131,14 @@ def test_parse_year():
     assert parse_year(None) is None
     assert parse_year("không rõ") is None
 
+@pytest.mark.parametrize("raw", ["arXiv:1806.01234", "arXiv:2012.01234v2"])
+def test_parse_year_ignores_arxiv_id(raw):
+    assert parse_year(raw) is None
+
+
+def test_parse_year_still_finds_year_next_to_arxiv_id():
+    assert parse_year("Foo. arXiv:1806.01234, 2018.") == 2018
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -141,7 +149,7 @@ def test_parse_year():
         "hep-th/9901001",             # style cũ, không match YEAR_PATTERN nhưng vẫn phải None
     ],
 )
-def test_parse_year_ignores_arxiv_id(raw):
+def test_parse_year_ignores_arxiv_id_extended(raw):
     assert parse_year(raw) is None
 
 def test_parse_year_still_finds_real_year_next_to_arxiv_id():
@@ -157,7 +165,10 @@ def test_parse_year_does_not_treat_generic_4_digit_numbers_as_arxiv_id():
     # coi "1806" đứng riêng là arXiv ID.
     assert parse_year("pp. 1806") == 1806
 
-
+@pytest.mark.parametrize("empty", [None, ""])
+def test_parse_year_handles_empty_input(empty):
+    assert parse_year(empty) is None
+    
 # ---- độ giống ----
 
 
