@@ -791,15 +791,12 @@ class FeatureRankBaseline(MatchingModel):
     """Naive baseline (mục 2.2): xếp ứng viên theo một cột feature, không huấn luyện.
 
     Mặc định ``title_lev_sim`` giảm dần, đúng tên trong ``features.FEATURE_NAMES``.
-    Tên cũ ``title_lev`` vẫn được chấp nhận như alias để tương thích các batch cũ.
     Cặp có feature NaN xếp sau cùng; hòa điểm theo ``ref_arxiv_id`` tăng dần khi batch
     có ``candidate_ids`` (``rank_ids``). Cột được tìm theo tên qua ``feature_names``
     của batch/mô hình hoặc truyền chỉ số cột.
     """
 
     requires_fit = False
-    _FEATURE_ALIASES = {"title_lev": "title_lev_sim"}
-
     def __init__(
         self,
         column: int | str = "title_lev_sim",
@@ -820,12 +817,8 @@ class FeatureRankBaseline(MatchingModel):
                 f"không tìm thấy feature {self.column!r}; truyền feature_names khi tạo "
                 "mô hình hoặc dùng batch có feature_names"
             )
-        # Ưu tiên khớp chính xác; nếu không có, thử tên tương thích cũ.
         if self.column in self.feature_names:
             return self.feature_names.index(self.column)
-        alias = self._FEATURE_ALIASES.get(self.column)
-        if alias is not None and alias in self.feature_names:
-            return self.feature_names.index(alias)
         raise KeyError(
             f"không tìm thấy feature {self.column!r}; truyền feature_names đúng thứ tự "
             "hoặc dùng chỉ số cột"

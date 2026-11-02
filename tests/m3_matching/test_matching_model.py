@@ -426,6 +426,16 @@ class TestDenseContract:
         assert SumModel().rank(X, k=3, tie_break=[2, 1, 0]).tolist() == [[2, 1, 0]]
         assert SumModel().rank(X, k=3, tie_break=[[1, 2, 0]]).tolist() == [[2, 0, 1]]
 
+    def test_unknown_tie_break_string_is_rejected(self):
+        batch = make_batch([[("a", 0.1), ("b", 0.9)]], names=("title_lev_sim",))
+
+        with pytest.raises(ValueError):
+            FeatureRankBaseline("title_lev_sim").rank(batch, tie_break="bogus")
+
+    def test_dense_tie_break_with_wrong_shape_is_rejected(self):
+        with pytest.raises(ValueError):
+            SumModel().rank(np.ones((1, 3, 2)), k=3, tie_break=[1, 2])
+
     def test_return_scores_and_k_larger_than_pool(self):
         X = np.array([[[0.5], [0.25]]])
         idx, top = SumModel().rank(X, k=4, return_scores=True)
