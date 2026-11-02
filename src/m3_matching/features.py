@@ -173,7 +173,8 @@ def author_key(name: str) -> tuple[str, str] | None:
     Returns:
         (họ, chữ đầu của tên; "" nếu không có), hoặc None với "et al."/"others"/rỗng.
     """
-    folded = NON_NAME_PATTERN.sub(" ", ascii_fold(name))
+    folded = ascii_fold(name).replace("{", "").replace("}", "")  # M{\"u}ller -> muller
+    folded = NON_NAME_PATTERN.sub(" ", folded)
     folded = MULTI_SPACE_PATTERN.sub(" ", folded).strip(" ,-")
     if not folded or folded in ET_AL_NAMES:
         return None
