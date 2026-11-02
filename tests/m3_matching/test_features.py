@@ -130,8 +130,34 @@ def test_parse_year():
     assert parse_year(None) is None
     assert parse_year("không rõ") is None
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "arXiv:1806.01234",           # YYMM của 2018 trùng 18xx
+        "arXiv:1903.04567v2",         # 2019 + version suffix
+        "arXiv:2012.01234",           # 2020 trùng 20xx
+        "https://arxiv.org/abs/1806.01234",
+        "hep-th/9901001",             # style cũ, không match YEAR_PATTERN nhưng vẫn phải None
+    ],
+)
+def test_parse_year_ignores_arxiv_id(raw):
+    assert parse_year(raw) is None
 
-# ---- độ giống (khớp với bài tập BT1-BT3) ----
+def test_parse_year_still_finds_real_year_next_to_arxiv_id():
+    # Nếu bibitem có CẢ arXiv ID lẫn năm thật, phải trả năm thật — fix không được
+    # xóa luôn năm.
+    assert parse_year("A. Vaswani et al. arXiv:1706.03762. 2017.") == 2017
+    assert parse_year("NeurIPS 2018, arXiv:1806.01234") == 2018
+
+
+def test_parse_year_does_not_treat_generic_4_digit_numbers_as_arxiv_id():
+    # "pp. 1806" (số trang) không phải arXiv ID -> vẫn giữ làm ứng viên năm,
+    # dù đây là case hiếm và kết quả có thể sai — nhưng fix không được âm thầm
+    # coi "1806" đứng riêng là arXiv ID.
+    assert parse_year("pp. 1806") == 1806
+
+
+# ---- độ giống ----
 
 
 def test_levenshtein_kitten_sitting():
@@ -148,6 +174,15 @@ def test_jaccard_empty_set_is_zero():
 
 # ---- build_features ----
 
+def test_arxiv_id_in_raw_text_does_not_create_fake_year():
+    # entry.year = None, raw_text chỉ có arXiv ID 2018 -> KHÔNG được tạo năm giả.
+    raw = r"A. Vaswani et al. arXiv:1806.01234."
+    vector = build_features(make_entry(), make_candidate(), raw_text=raw)
+
+    assert feature(vector, "has_year") == 0.0
+    assert feature(vector, "year_match") == 0.0
+    assert feature(vector, "year_signed_diff") == 0.0
+    assert feature(vector, "year_diff") == pytest.approx(0.5)  # MISSING_YEAR_DIFF
 
 def test_build_features_has_one_value_per_feature_name():
     vector = build_features(make_entry(), make_candidate())

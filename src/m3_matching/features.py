@@ -141,7 +141,10 @@ def parse_year(raw: str | None) -> int | None:
     """
     if not raw:
         return None
-    match = YEAR_PATTERN.search(raw)
+    # Loại bỏ arXiv ID trước (có thể có version suffix) để "1806.01234" không bị
+    # coi là năm 1806; sau đó mới tìm năm trong phần còn lại của chuỗi.
+    cleaned = ARXIV_ID_PATTERN.sub(" ", raw)
+    match = YEAR_PATTERN.search(cleaned)
     return int(match.group()) if match else None
 
 
