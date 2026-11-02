@@ -2,13 +2,15 @@
 
 Không gọi mạng thật: dùng phiên HTTP giả trả về archive dựng ngay trong bộ nhớ. Nhóm test:
 (1) giải nén/lọc, (2) an toàn, (3) tải lịch sự + quy định arXiv, (4) vòng lặp, Checkpoint/Resume,
-metadata, CLI.
+metadata, CLI, (5) HTTP thật qua localhost, (6) API cho Runner, (7) các sửa đổi theo review PR
+(retry lỗi mềm, redirect, n_versions, số liệu thời gian/RAM, lỗi metadata...).
 """
 
 import gzip
 import inspect
 import io
 import json
+import os
 import shutil
 import sys
 import tarfile
@@ -208,9 +210,11 @@ class FakeSession:
         self.script = script
         self.headers = {}
         self.calls: list[str] = []
+        self.kwargs: list[dict] = []  # tham số của từng lần gọi (vd allow_redirects)
 
     def get(self, url, **kwargs):
         self.calls.append(url)
+        self.kwargs.append(kwargs)
         outcome = self.script(url, len(self.calls))
         if isinstance(outcome, Exception):
             raise outcome
@@ -714,3 +718,479 @@ def test_cli_requires_contact(tmp_path: Path, monkeypatch, capsys):
     ]
     assert crawler.main(base) == 2
     assert "contact" in capsys.readouterr().err
+
+# ---------------------------------------------------------------- (7) Sửa đổi theo review PR
+HTML_GZ = gzip.compress(b"<!DOCTYPE html><html>Service unavailable</html>")
+ATOM = (
+    '<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom">'
+    "<entry><id>http://arxiv.org/abs/2506.00788v2</id></entry></feed>"
+)
+EMPTY_ATOM = '<feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+
+
+def html_script(url, n):
+    return FakeResponse(body=HTML_GZ)
+
+
+def one_version_row():
+    """Bài 2506.00789 (1 version) để test từng lượt thử lại."""
+    return discovery_rows()[1:2]
+
+
+# ---- #1: html_response / corrupt_archive được thử lại, rồi mới chốt empty
+def test_html_response_is_retried_then_finalised_after_max_soft_retries(tmp_path: Path):
+    v1 = tmp_path / "2506-00789" / "v1"
+    for attempt in range(1, crawler.MAX_SOFT_RETRIES):
+        summary, session, _ = run_crawl(tmp_path, script=html_script, papers=one_version_row())
+        assert len(session.calls) == 1
+        assert summary["by_status"] == {"error": 1} and summary["exit_code"] == 1
+        assert not v1.exists()  # KHÔNG ghi thư mục v{n} khi còn được thử lại
+        last = read_log(tmp_path)[-1]
+        assert last["reason"] == "html_response" and last["soft_errors"] == attempt
+    # Lượt cuối cùng: hết lượt thử, chốt empty và ghi record rỗng
+    summary, _, _ = run_crawl(tmp_path, script=html_script, papers=one_version_row())
+    assert summary["by_status"] == {"empty": 1}
+    assert summary["empty_reasons"] == {"html_response": 1} and summary["exit_code"] == 0
+    assert v1.is_dir() and not any(v1.iterdir())
+    _, session, _ = run_crawl(tmp_path, script=html_script, papers=one_version_row())
+    assert session.calls == []  # đã chốt, resume bỏ qua
+
+
+def test_html_response_recovers_when_server_returns_real_source(tmp_path: Path):
+    run_crawl(tmp_path, script=html_script, papers=one_version_row())
+    good = lambda url, n: FakeResponse(body=make_tar_gz({"main.tex": TEX}))  # noqa: E731
+    summary, _, _ = run_crawl(tmp_path, script=good, papers=one_version_row())
+    assert summary["by_status"] == {"ok": 1}
+    assert (tmp_path / "2506-00789" / "v1" / "main.tex").read_bytes() == TEX
+
+
+def test_corrupt_archive_is_retried_not_finalised(tmp_path: Path):
+    broken = make_tar_gz({"a.tex": TEX, "big.bin": os.urandom(300_000)})
+    script = lambda url, n: FakeResponse(body=broken[: len(broken) // 2])  # noqa: E731
+    summary, _, _ = run_crawl(tmp_path, script=script, papers=one_version_row())
+    assert summary["by_status"] == {"error": 1}
+    assert read_log(tmp_path)[-1]["reason"] == "corrupt_archive"
+    assert not (tmp_path / "2506-00789" / "v1").exists()
+
+
+def test_soft_error_counter_survives_an_unrelated_network_error(tmp_path: Path):
+    run_crawl(tmp_path, script=html_script, papers=one_version_row())
+    run_crawl(tmp_path, script=lambda url, n: FakeResponse(status=500), papers=one_version_row())
+    assert read_log(tmp_path)[-1]["soft_errors"] == 1  # lỗi mạng không đưa bộ đếm về 0
+    run_crawl(tmp_path, script=html_script, papers=one_version_row())
+    assert read_log(tmp_path)[-1]["soft_errors"] == 2
+
+
+def test_download_too_large_is_a_terminal_empty_record(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(crawler, "MAX_DOWNLOAD_BYTES", 10)
+    script = lambda url, n: FakeResponse(body=b"x" * 100)  # noqa: E731
+    summary, session, _ = run_crawl(tmp_path, script=script, papers=one_version_row())
+    assert len(session.calls) == 1  # không thử lại
+    assert summary["empty_reasons"] == {"too_large": 1} and summary["exit_code"] == 0
+    assert read_log(tmp_path)[-1]["archive_bytes"] == 100
+    assert (tmp_path / "2506-00789" / "v1").is_dir()
+    _, session2, _ = run_crawl(tmp_path, script=script, papers=one_version_row())
+    assert session2.calls == []
+
+
+def test_too_large_error_is_a_fetch_error(monkeypatch):
+    monkeypatch.setattr(crawler, "MAX_DOWNLOAD_BYTES", 10)
+    fetcher, _, _ = make_fetcher(lambda url, n: FakeResponse(body=b"x" * 100))
+    with pytest.raises(crawler.TooLargeError) as info:
+        fetcher.get("https://export.arxiv.org/src/2506.00788v1")
+    assert isinstance(info.value, FetchError) and info.value.downloaded == 100
+
+
+def test_short_download_versus_content_length_is_retried():
+    def script(url, n):
+        if n == 1:
+            return FakeResponse(body=b"abc", headers={"Content-Length": "10"})
+        return FakeResponse(body=b"0123456789", headers={"Content-Length": "10"})
+
+    fetcher, session, _ = make_fetcher(script)
+    assert fetcher.get("https://export.arxiv.org/src/2506.00788v1").body == b"0123456789"
+    assert len(session.calls) == 2
+
+
+def test_content_length_not_compared_when_body_was_decoded_and_raw_is_unknown():
+    headers = {"Content-Length": "10", "Content-Encoding": "gzip"}
+    fetcher, session, _ = make_fetcher(lambda url, n: FakeResponse(body=b"abc", headers=headers))
+    assert fetcher.get("https://export.arxiv.org/src/2506.00788v1").body == b"abc"
+    assert len(session.calls) == 1  # không đủ dữ kiện để so, nên không báo thiếu oan
+
+
+def test_real_server_truncated_body_is_retried_then_gives_up():
+    hits: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b"only ten b")  # hứa 100 byte nhưng chỉ gửi 10
+
+        def log_message(self, *args):
+            pass
+
+    server = _serve(Handler)
+    try:
+        fetcher = PoliteFetcher("UA", 3.0, sleep=lambda _s: None, backoff=(0.0, 0.0, 0.0))
+        with pytest.raises(FetchError):
+            fetcher.get(f"http://127.0.0.1:{server.server_address[1]}/src/x")
+    finally:
+        server.shutdown()
+    assert len(hits) == 4  # 1 lần đầu + 3 lần thử lại
+
+
+# ---- #2: lỗi bất ngờ ở một version không giết cả pipeline
+def test_write_version_failure_is_logged_and_run_continues(tmp_path: Path, monkeypatch):
+    real = crawler.write_version
+
+    def flaky_write(folder, version, files):
+        if folder.name == "2506-00788" and version == 1:
+            raise OSError("disk full")
+        return real(folder, version, files)
+
+    monkeypatch.setattr(crawler, "write_version", flaky_write)
+    summary, session, _ = run_crawl(tmp_path)
+    assert len(session.calls) == 4  # vẫn đi tiếp qua các version và bài còn lại
+    assert summary["by_status"] == {"ok": 2, "empty": 1, "error": 1} and summary["exit_code"] == 1
+    bad = next(r for r in read_log(tmp_path) if r["status"] == "error")
+    assert bad["reason"].startswith("OSError") and "disk full" in bad["reason"]
+    assert not (tmp_path / "2506-00788" / "v1").exists()
+    monkeypatch.setattr(crawler, "write_version", real)  # lần chạy sau tự hồi phục
+    _, session2, _ = run_crawl(tmp_path)
+    assert [c.rsplit("/", 1)[-1] for c in session2.calls] == ["2506.00788v1"]
+
+
+def test_extract_failure_is_logged_with_exception_type_and_run_continues(
+    tmp_path: Path, monkeypatch
+):
+    real = crawler.extract_tex_sources
+    calls = []
+
+    def flaky_extract(data):
+        calls.append(1)
+        if len(calls) == 1:
+            raise MemoryError("giai nen qua lon")
+        return real(data)
+
+    monkeypatch.setattr(crawler, "extract_tex_sources", flaky_extract)
+    summary, session, _ = run_crawl(tmp_path)
+    assert len(session.calls) == 4 and summary["by_status"]["error"] == 1
+    assert read_log(tmp_path)[0]["reason"].startswith("MemoryError")
+
+
+def test_run_safety_net_catches_a_crash_of_crawl_version_itself(tmp_path: Path, monkeypatch):
+    real = crawler.crawl_version
+
+    def exploding(fetcher, row, version, folder, log_path, **kwargs):
+        if row["arxiv_id"] == "2506.00788" and version == 1:
+            raise RuntimeError("boom")
+        return real(fetcher, row, version, folder, log_path, **kwargs)
+
+    monkeypatch.setattr(crawler, "crawl_version", exploding)
+    summary, session, _ = run_crawl(tmp_path)
+    assert len(session.calls) == 3 and summary["by_status"]["error"] == 1
+    assert read_log(tmp_path)[0]["reason"] == "RuntimeError: boom"
+
+
+# ---- #3: n_versions thiếu/sai
+@pytest.mark.parametrize("bad", [None, 0, -1, "abc", True])
+def test_n_versions_invalid_values_raise(bad):
+    with pytest.raises(ValueError, match="n_versions"):
+        crawler._n_versions({"arxiv_id": "2506.00001", "n_versions": bad})
+
+
+def test_n_versions_missing_key_raises_and_valid_values_pass():
+    with pytest.raises(ValueError, match="2506.00001"):
+        crawler._n_versions({"arxiv_id": "2506.00001"})
+    assert crawler._n_versions({"arxiv_id": "x", "n_versions": 4}) == 4
+    assert crawler._n_versions({"arxiv_id": "x", "n_versions": "3"}) == 3
+
+
+def test_run_refuses_before_any_request_when_n_versions_is_missing(tmp_path: Path):
+    rows = discovery_rows()
+    del rows[0]["n_versions"]
+    fetcher, session, _ = make_fetcher(good_script)
+    with pytest.raises(ValueError, match="2506.00788"):
+        crawler.run(rows, tmp_path, fetcher, api_fallback=False)
+    assert session.calls == [] and list(tmp_path.iterdir()) == []  # chưa tải, chưa tạo gì
+
+
+def test_missing_n_versions_is_resolved_through_the_api(tmp_path: Path):
+    rows = discovery_rows()
+    del rows[0]["n_versions"]
+
+    def script(url, n):
+        if "/api/query" in url:
+            assert "id_list=2506.00788" in url and "max_results=1" in url
+            return FakeResponse(body=ATOM.encode(), headers={"Content-Type": "application/atom+xml"})
+        return good_script(url, n)
+
+    summary, session, _ = run_crawl(tmp_path, script=script, papers=rows)
+    assert session.calls[0].startswith("https://export.arxiv.org/api/query")
+    assert summary["n_versions_from_api"] == ["2506.00788"]
+    assert summary["by_status"] == {"ok": 3, "empty": 1}  # đủ v1 và v2 của bài đó
+
+
+def test_api_that_does_not_know_the_paper_still_raises(tmp_path: Path):
+    rows = discovery_rows()
+    del rows[0]["n_versions"]
+
+    def script(url, n):
+        return FakeResponse(body=EMPTY_ATOM.encode()) if "/api/query" in url else good_script(url, n)
+
+    fetcher, _, _ = make_fetcher(script)
+    with pytest.raises(ValueError, match="2506.00788"):
+        crawler.run(rows, tmp_path, fetcher)
+
+
+def test_api_lookup_is_batched_and_goes_through_the_polite_fetcher():
+    ids = [f"2506.{i:05d}" for i in range(150)]
+    fetcher, session, clock = make_fetcher(lambda url, n: FakeResponse(body=EMPTY_ATOM.encode()))
+    assert crawler.fetch_n_versions_from_api(fetcher, ids) == {}
+    assert len(session.calls) == 2  # 100 + 50
+    assert session.calls[1].count(",") == 49
+    assert all(s == pytest.approx(3.0) for s in clock.sleeps)  # vẫn cách nhau 3 giây
+
+
+def test_api_403_still_stops_everything():
+    fetcher, _, _ = make_fetcher(lambda url, n: FakeResponse(status=403))
+    with pytest.raises(CrawlBlockedError):
+        crawler.fetch_n_versions_from_api(fetcher, ["2506.00788"])
+
+
+def test_find_ids_not_in_discovery_reports_gaps():
+    rows = [{"arxiv_id": "2506.00788"}, {"arxiv_id": "2506.00790"}]
+    assert crawler.find_ids_not_in_discovery(rows, "2506.00788", "2506.00791") == [
+        "2506.00789",
+        "2506.00791",
+    ]
+    assert crawler.find_ids_not_in_discovery(rows, "2506.00788", "2507.00001") is None  # 2 tháng
+
+
+def test_crawl_range_summary_lists_ids_missing_from_discovery(tmp_path: Path):
+    out = tmp_path / "out"
+    fetcher, _, _ = make_fetcher(good_script)
+    summary = crawler.crawl_range(
+        "2506.00788", "2506.00791", out, discovery_path=write_discovery(tmp_path), fetcher=fetcher
+    )
+    assert summary["ids_not_in_discovery"] == ["2506.00790", "2506.00791"]
+    assert summary["ids_not_in_discovery_count"] == 2
+    saved = json.loads((out / "crawl_summary.json").read_text(encoding="utf-8"))
+    assert saved["ids_not_in_discovery"] == ["2506.00790", "2506.00791"]
+
+
+def test_coverage_is_skipped_when_limit_cuts_the_selection(tmp_path: Path):
+    fetcher, _, _ = make_fetcher(good_script)
+    summary = crawler.crawl_range(
+        "2506.00788",
+        "2506.00791",
+        tmp_path / "out",
+        discovery_path=write_discovery(tmp_path),
+        limit=1,
+        fetcher=fetcher,
+    )
+    assert summary["ids_not_in_discovery"] is None
+
+
+# ---- #4, #5: RAM và thời gian
+def test_peak_and_current_rss_are_sane():
+    peak, current = crawler._peak_rss_mb(), crawler._current_rss_mb()
+    assert peak is None or peak > 0
+    assert current is None or current > 0
+    if peak is not None and current is not None:
+        assert peak + 1 >= current  # đỉnh không thể thấp hơn mức hiện tại
+
+
+def test_log_and_summary_have_wall_seconds_and_rss_that_survive_resume(tmp_path: Path):
+    summary, _, _ = run_crawl(tmp_path)
+    assert all("wall_seconds" in r and "rss_mb" in r for r in read_log(tmp_path))
+    assert summary["versions_with_wall_seconds"] == 4
+    assert set(summary["seconds_per_paper"]) == {"2506.00788", "2506.00789", "hep-th/9901001"}
+    assert summary["seconds_per_paper_max"] >= summary["seconds_per_paper_mean"] >= 0
+    assert "rss_mb_mean" in summary and "peak_rss_mb" in summary
+    resumed, session, _ = run_crawl(tmp_path)  # không tải gì, nhưng số liệu phải y nguyên
+    assert session.calls == []
+    assert resumed["wall_seconds_total"] == summary["wall_seconds_total"]
+    assert resumed["seconds_per_paper"] == summary["seconds_per_paper"]
+
+
+# ---- #5: nhận diện nội dung không phải TeX
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        (gzip.compress(b"%!PS-Adobe-3.0\n\\def\\x{1}\n"), "not_tex"),  # PostScript có dấu "\"
+        (gzip.compress(b"%PDF-1.4\n\\begin{x}"), "pdf_only"),  # PDF bọc gzip
+        (b"\x89PNG\r\n\x1a\n\\begin{document}", "not_tex"),  # ảnh PNG
+        (b"plain text with a \\ backslash and nothing TeX-like", "not_tex"),
+    ],
+)
+def test_non_tex_single_files_are_rejected(payload, reason):
+    result = extract_tex_sources(payload)
+    assert result.status == "empty" and result.reason == reason and result.files == {}
+
+
+def test_plain_tex_without_latex_preamble_is_still_accepted():
+    assert extract_tex_sources(b"\\def\\a{1}\n\\bye\n").status == "ok"
+
+
+# ---- #6: tar hỏng giữa chừng là corrupt_archive, không phải not_tex
+def test_truncated_tar_gz_is_corrupt_archive_not_not_tex():
+    data = make_tar_gz({"main.tex": TEX, "big.bin": os.urandom(300_000), "z.tex": TEX})
+    result = extract_tex_sources(data[: len(data) // 2])
+    assert result.status == "empty" and result.reason == "corrupt_archive"
+
+
+def test_plain_tar_cut_in_the_middle_of_a_member_is_corrupt_archive():
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        for name in ("a.tex", "b.tex"):
+            info = tarfile.TarInfo(name)
+            info.size = 5000
+            tar.addfile(info, io.BytesIO(b"\\begin{x}" + b"y" * 4991))
+    data = buffer.getvalue()
+    cut = 512 + 5120 + 512 + 100  # hết member a, mới đọc được 100 byte của member b
+    assert extract_tex_sources(data[:cut]).reason == "corrupt_archive"
+    assert extract_tex_sources(data).status == "ok"  # nguyên vẹn thì vẫn đọc được
+
+
+# ---- #8: redirect
+def test_redirects_are_never_followed_automatically():
+    fetcher, session, _ = make_fetcher(lambda url, n: FakeResponse(body=b"x"))
+    fetcher.get("https://export.arxiv.org/src/2506.00788v1")
+    assert session.kwargs[0]["allow_redirects"] is False
+
+
+def test_redirect_to_another_host_is_refused_and_never_requested():
+    location = "https://arxiv.org/src/2506.00788v1"
+    script = lambda url, n: FakeResponse(status=301, headers={"Location": location})  # noqa: E731
+    fetcher, session, _ = make_fetcher(script)
+    with pytest.raises(crawler.ForbiddenRedirectError, match="arxiv.org"):
+        fetcher.get("https://export.arxiv.org/src/2506.00788v1")
+    assert session.calls == ["https://export.arxiv.org/src/2506.00788v1"]  # không chạm arxiv.org
+
+
+def test_redirect_without_location_is_refused():
+    fetcher, _, _ = make_fetcher(lambda url, n: FakeResponse(status=302))
+    with pytest.raises(crawler.ForbiddenRedirectError):
+        fetcher.get("https://export.arxiv.org/src/2506.00788v1")
+
+
+def test_redirect_within_export_host_is_followed_and_waits_the_delay():
+    def script(url, n):
+        if n == 1:
+            return FakeResponse(status=301, headers={"Location": "/src/new/2506.00788v1"})
+        return FakeResponse(body=b"ok")
+
+    fetcher, session, clock = make_fetcher(script)
+    assert fetcher.get("https://export.arxiv.org/src/2506.00788v1").body == b"ok"
+    assert session.calls[1] == "https://export.arxiv.org/src/new/2506.00788v1"
+    assert clock.sleeps == [pytest.approx(3.0)]  # bước nhảy cũng cách request trước 3 giây
+
+
+def test_endless_redirects_give_up():
+    script = lambda url, n: FakeResponse(status=302, headers={"Location": "/src/loop"})  # noqa: E731
+    fetcher, session, _ = make_fetcher(script)
+    with pytest.raises(FetchError, match="redirect"):
+        fetcher.get("https://export.arxiv.org/src/2506.00788v1")
+    assert len(session.calls) == crawler.MAX_REDIRECTS + 1
+
+
+def test_forbidden_redirect_becomes_an_error_record_not_a_crash(tmp_path: Path):
+    location = "https://arxiv.org/src/2506.00789v1"
+    script = lambda url, n: FakeResponse(status=302, headers={"Location": location})  # noqa: E731
+    summary, session, _ = run_crawl(tmp_path, script=script, papers=one_version_row())
+    assert len(session.calls) == 1 and summary["by_status"] == {"error": 1}
+    assert "redirect" in read_log(tmp_path)[-1]["reason"]
+
+
+def test_real_server_redirect_to_arxiv_org_is_not_followed():
+    hits: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", "https://arxiv.org/src/2506.00788v1")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = _serve(Handler)
+    try:
+        fetcher = PoliteFetcher("UA", 3.0, sleep=lambda _s: None)
+        with pytest.raises(crawler.ForbiddenRedirectError):
+            fetcher.get(f"http://127.0.0.1:{server.server_address[1]}/src/2506.00788v1")
+    finally:
+        server.shutdown()
+    assert hits == ["/src/2506.00788v1"]  # requests thật cũng không tự theo redirect
+
+
+# ---- #7, #9: lỗi metadata và ngày revise thiếu
+def test_invalid_metadata_is_reported_in_summary_and_file_and_paper_is_still_crawled(
+    tmp_path: Path, monkeypatch
+):
+    real = crawler.build_metadata
+
+    def bad(row):
+        if row["arxiv_id"] == "2506.00788":
+            raise ValueError("authors rong")
+        return real(row)
+
+    monkeypatch.setattr(crawler, "build_metadata", bad)
+    summary, session, _ = run_crawl(tmp_path)
+    assert summary["metadata_errors"] == [
+        {"arxiv_id": "2506.00788", "error": "ValueError: authors rong"}
+    ]
+    assert not (tmp_path / "2506-00788" / "metadata.json").exists()
+    assert len(session.calls) == 4  # bài vẫn được crawl
+    saved = json.loads((tmp_path / crawler.METADATA_ERRORS_NAME).read_text(encoding="utf-8"))
+    assert saved[0]["arxiv_id"] == "2506.00788"
+
+
+def test_no_metadata_errors_file_when_everything_is_fine(tmp_path: Path):
+    summary, _, _ = run_crawl(tmp_path)
+    assert summary["metadata_errors"] == []
+    assert not (tmp_path / crawler.METADATA_ERRORS_NAME).exists()
+
+
+def test_missing_middle_version_date_is_flagged_not_silently_shifted(tmp_path: Path):
+    row = {
+        **discovery_rows()[0],
+        "n_versions": 4,
+        "version_dates": {
+            "v1": "2025-06-01T12:00:00Z",
+            "v2": "2025-06-03T00:00:00Z",
+            "v4": "2025-06-09T08:00:00Z",  # thiếu v3
+        },
+    }
+    assert crawler._revised_dates(row) == (["2025-06-03", "2025-06-09"], [3])
+    summary, _, _ = run_crawl(tmp_path, papers=[row])
+    assert summary["revised_dates_incomplete"] == [
+        {"arxiv_id": "2506.00788", "missing_versions": [3]}
+    ]
+    complete, _, _ = run_crawl(tmp_path / "ok", papers=discovery_rows()[:1])
+    assert complete["revised_dates_incomplete"] == []
+
+
+# ---- CLI
+def test_cli_exits_2_when_discovery_lacks_n_versions(tmp_path: Path, capsys):
+    rows = discovery_rows()
+    del rows[0]["n_versions"]
+    path = tmp_path / "d.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    code = crawler.main(
+        ["--id_start", "2506.00788", "--id_end", "2506.00789", "--contact", "a@b.c",
+         "--discovery", str(path), "--out", str(tmp_path / "o"), "--no_api_fallback"]
+    )  # fmt: skip
+    assert code == 2 and "n_versions" in capsys.readouterr().err
+
+
+def test_printable_summary_shortens_long_collections():
+    shown = crawler._printable({"short": [1, 2], "long": list(range(50)), "n": 3})
+    assert shown["short"] == [1, 2] and shown["n"] == 3
+    assert "50" in shown["long"] and crawler.SUMMARY_NAME in shown["long"]

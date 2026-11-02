@@ -26,7 +26,8 @@ Quy tắc dữ liệu:
     - Ghi ``size_before`` (tổng dung lượng mọi file trong archive, đã giải nén) và
       ``size_after`` (dung lượng ``.tex``/``.bib`` giữ lại) cho báo cáo M1.
     - Checkpoint/Resume: sau mỗi version ghi một dòng vào ``crawl_log.jsonl``; chạy lại cùng
-      lệnh sẽ bỏ qua version đã xong và thử lại version bị lỗi.
+      lệnh sẽ bỏ qua version đã xong và thử lại version bị lỗi. ``html_response`` và
+      ``corrupt_archive`` cũng được thử lại (tối đa ``MAX_SOFT_RETRIES`` lần) trước khi chốt rỗng.
 
 Dùng từ code khác (Runner ``main.py``): ``crawl_range(id_start, id_end, out_dir, resume=True)`` và
 ``crawl_paper(arxiv_id, out_dir)``, đúng chữ ký stub ban đầu của task (xem hai hàm đó bên dưới).
@@ -50,11 +51,13 @@ import shutil
 import sys
 import tarfile
 import time
+import xml.etree.ElementTree as ET
 import zlib
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -85,14 +88,41 @@ RETRY_BACKOFF_S = (10.0, 30.0, 60.0)  # chờ trước mỗi lần thử lại (
 SINGLE_FILE_NAME = "main.tex"  # tên file khi nguồn là một .gz đơn
 LOG_NAME = "crawl_log.jsonl"
 SUMMARY_NAME = "crawl_summary.json"
+METADATA_ERRORS_NAME = "metadata_errors.json"  # bài không dựng được metadata.json
+
+# [Review #1] Lý do "nghi lỗi tạm thời" (arXiv trả trang HTML lỗi, tải thiếu/hỏng): KHÔNG chốt
+# empty ngay mà ghi STATUS_ERROR để resume thử lại, tối đa MAX_SOFT_RETRIES lần rồi mới chốt.
+RETRYABLE_REASONS = frozenset({"html_response", "corrupt_archive"})
+MAX_SOFT_RETRIES = 3  # tổng số lần được gặp lý do trên; lần thứ 3 vẫn gặp thì chốt empty
+
+# [Review #8] Redirect: chỉ đi theo khi vẫn ở export.arxiv.org (arxiv.org sẽ bị khóa IP).
+ALLOWED_HOST = "export.arxiv.org"
+MAX_REDIRECTS = 3
+_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
+
+# [Review #3] Fallback tra n_versions bằng arXiv API (cũng qua PoliteFetcher: delay 3 giây).
+API_URL = "https://export.arxiv.org/api/query?id_list={ids}&max_results={n}"
+API_BATCH = 100  # số ID mỗi request
+_ATOM_NS = "{http://www.w3.org/2005/Atom}"
+_ATOM_ID = re.compile(r"/abs/(?P<id>.+?)v(?P<n>\d+)\s*$")  # <id>http://arxiv.org/abs/2506.00788v3</id>
+_FULL_ID = re.compile(r"^(?P<prefix>\d{4})\.(?P<number>\d{4,5})$")
 
 STATUS_OK = "ok"  # có ít nhất một .tex
 STATUS_EMPTY = "empty"  # record rỗng: version không có TeX
-STATUS_ERROR = "error"  # lỗi tạm thời, sẽ được thử lại khi chạy lại
+STATUS_ERROR = "error"  # lỗi tạm thời (mạng, html_response/corrupt_archive chưa hết lượt thử...)
 STATUS_BLOCKED = "blocked"  # arXiv trả 403: dừng toàn bộ
+# [Review #1] Chỉ ok/empty mới là "xong". html_response/corrupt_archive KHÔNG còn đi vào empty
+# ngay (xem RETRYABLE_REASONS), nên resume sẽ thử lại chúng thay vì bỏ qua vĩnh viễn.
 TERMINAL_STATUSES = frozenset({STATUS_OK, STATUS_EMPTY})  # xong, resume bỏ qua
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+# [Review #5] Nhận diện "trông giống TeX" bằng marker thật, không chỉ có ký tự "\".
+_TEX_MARKERS = re.compile(
+    rb"\\(documentclass|documentstyle|begin|end|input|include|section|usepackage|def|"
+    rb"newcommand|magnification|font|hsize|catcode|bye)\b"
+)
+_BINARY_MAGIC = (b"%!PS", b"%PDF", b"\x89PNG", b"GIF8", b"\xff\xd8")  # PS, PDF, PNG, GIF, JPEG
+_MARKER_SCAN_BYTES = 200_000  # chỉ tìm marker trong 200KB đầu
 _BAD_FILENAME_CHARS = re.compile(r'[<>:"|?*\x00-\x1f]')  # ký tự Windows không cho phép
 _schema_warned = False  # chỉ cảnh báo thiếu src.schemas một lần
 
@@ -112,6 +142,22 @@ class CrawlAbortedError(RuntimeError):
 
 class FetchError(RuntimeError):
     """Tải một version thất bại sau khi đã thử lại (lỗi tạm thời, version sẽ được thử lại sau)."""
+
+
+class TooLargeError(FetchError):
+    """[Review #1] Nguồn vượt ``MAX_DOWNLOAD_BYTES``: thử lại cũng vô ích -> record rỗng ``too_large``.
+
+    Attributes:
+        downloaded: Số byte đã nhận được trước khi dừng.
+    """
+
+    def __init__(self, message: str, downloaded: int = 0) -> None:
+        super().__init__(message)
+        self.downloaded = downloaded
+
+
+class ForbiddenRedirectError(FetchError):
+    """[Review #8] Server chuyển hướng sang host khác ``export.arxiv.org``: không đi theo."""
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +230,19 @@ def _from_single_file(raw: bytes) -> Extracted:
     head = raw[:4096]
     stripped = head.lstrip()[:15].lower()
     if stripped.startswith((b"<!doctype", b"<html", b"<?xml")):
+        # Nghi trang lỗi của server, KHÔNG phải bài thật: crawl_version sẽ thử lại
+        # (RETRYABLE_REASONS) thay vì chốt empty ngay.
         return Extracted(STATUS_EMPTY, "html_response", size_before=len(raw), n_files_before=1)
-    if b"\x00" in head or b"\\" not in raw:
+    if head.startswith(b"%PDF-"):  # PDF bọc trong gzip
+        return Extracted(STATUS_EMPTY, "pdf_only", size_before=len(raw), n_files_before=1)
+    # [Review #5] Trước đây chỉ cần "không có NUL trong 4KB đầu và có dấu \" nên PostScript,
+    # file text bất kỳ... đều bị ghi thành main.tex. Giờ: loại theo magic bytes VÀ bắt buộc có
+    # ít nhất một marker TeX/LaTeX trong phần đầu file.
+    if (
+        b"\x00" in head
+        or head.startswith(_BINARY_MAGIC)
+        or not _TEX_MARKERS.search(raw[:_MARKER_SCAN_BYTES])
+    ):
         return Extracted(STATUS_EMPTY, "not_tex", size_before=len(raw), n_files_before=1)
     return Extracted(
         STATUS_OK,
@@ -203,28 +260,49 @@ def _from_tar(tar: tarfile.TarFile) -> Extracted:
 
     Returns:
         Kết quả đã lọc. Chỉ file thường được xét: symlink, hardlink, thiết bị bị bỏ qua.
+        Archive hỏng GIỮA CHỪNG (đã đọc được ít nhất một member) trả ``corrupt_archive``.
+
+    Raises:
+        tarfile.ReadError: Khi không đọc nổi member nào (nghĩa là KHÔNG phải tar), để
+            ``extract_tex_sources`` thử tiếp nhánh ``.gz`` đơn / văn bản thô.
+        EOFError, OSError, zlib.error: Tương tự, khi hỏng ngay từ đầu.
     """
     result = Extracted(STATUS_EMPTY, "no_tex")
     seen: set[str] = set()
-    for member in tar:
-        if not member.isfile():
-            continue
-        result.n_files_before += 1
-        result.size_before += member.size
-        if result.size_before > MAX_UNCOMPRESSED_BYTES:
-            return Extracted(STATUS_EMPTY, "too_large", size_before=result.size_before)
-        suffix = PurePosixPath(member.name).suffix.lower()
-        if suffix not in KEEP_EXTENSIONS:
-            continue  # ảnh, .sty, .cls, .pdf... không bao giờ vào corpus
-        relpath = _safe_relpath(member.name)
-        if relpath is None or member.size > MAX_KEPT_FILE_BYTES or relpath.lower() in seen:
-            result.skipped.append(member.name)
-            continue
-        handle = tar.extractfile(member)
-        if handle is None:
-            continue
-        seen.add(relpath.lower())  # so khớp không phân biệt hoa thường (Windows)
-        result.files[relpath] = handle.read()
+    members_read = 0
+    # [Review #6] Trước đây ReadError giữa lúc duyệt bị bắt ở ngoài rồi `pass`, code đi tiếp vào
+    # nhánh gunzip và cuối cùng trả not_tex (chốt vĩnh viễn). Giờ bắt NGAY trong vòng lặp.
+    try:
+        for member in tar:
+            members_read += 1
+            if not member.isfile():
+                continue
+            result.n_files_before += 1
+            result.size_before += member.size
+            if result.size_before > MAX_UNCOMPRESSED_BYTES:
+                return Extracted(STATUS_EMPTY, "too_large", size_before=result.size_before)
+            suffix = PurePosixPath(member.name).suffix.lower()
+            if suffix not in KEEP_EXTENSIONS:
+                continue  # ảnh, .sty, .cls, .pdf... không bao giờ vào corpus
+            relpath = _safe_relpath(member.name)
+            if relpath is None or member.size > MAX_KEPT_FILE_BYTES or relpath.lower() in seen:
+                result.skipped.append(member.name)
+                continue
+            handle = tar.extractfile(member)
+            if handle is None:
+                continue
+            seen.add(relpath.lower())  # so khớp không phân biệt hoa thường (Windows)
+            result.files[relpath] = handle.read()
+    except (tarfile.ReadError, EOFError, OSError, zlib.error) as exc:
+        if members_read == 0:
+            raise  # chưa đọc được gì: không phải tar (hoặc hỏng từ đầu), để caller phân loại
+        logger.warning("Tar hong giua chung (da doc %d member): %s", members_read, exc)
+        return Extracted(
+            STATUS_EMPTY,
+            "corrupt_archive",  # thuộc RETRYABLE_REASONS: crawl_version sẽ thử lại
+            size_before=result.size_before,
+            n_files_before=result.n_files_before,
+        )
     if any(PurePosixPath(name).suffix.lower() == ".tex" for name in result.files):
         result.status, result.reason = STATUS_OK, None
     else:
@@ -263,9 +341,12 @@ def extract_tex_sources(data: bytes) -> Extracted:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tar:
             return _from_tar(tar)
     except tarfile.ReadError:
-        pass  # không phải tar: thử .gz đơn / văn bản thô bên dưới
+        # Chỉ tới đây khi KHÔNG đọc được member nào (xem _from_tar): không phải tar,
+        # thử .gz đơn / văn bản thô bên dưới. Tar hỏng giữa chừng đã trả corrupt_archive.
+        pass
     except (EOFError, OSError, zlib.error) as exc:
         logger.warning("Archive hong: %s", exc)
+        # corrupt_archive thuộc RETRYABLE_REASONS: crawl_version thử lại, không chốt ngay
         return Extracted(STATUS_EMPTY, "corrupt_archive", size_before=len(data))
     if data[:2] == b"\x1f\x8b":
         try:
@@ -376,16 +457,87 @@ class PoliteFetcher:
             if remaining > 0:
                 self._sleep(remaining)
 
+    def _request(self, url: str) -> requests.Response:
+        """Gửi GET, KHÔNG để ``requests`` tự đi theo redirect.
+
+        [Review #8] Nếu ``export.arxiv.org`` chuyển hướng sang ``arxiv.org`` thì tự động đi theo
+        sẽ vi phạm quy định (bị khóa IP). Ở đây chỉ đi theo redirect khi đích vẫn là
+        ``export.arxiv.org`` (https); mỗi bước nhảy cũng chờ đủ ``delay`` như một request mới.
+
+        Raises:
+            ForbiddenRedirectError: Khi đích redirect nằm ngoài ``export.arxiv.org``.
+            FetchError: Khi vượt ``MAX_REDIRECTS`` bước nhảy.
+        """
+        current = url
+        for hop in range(MAX_REDIRECTS + 1):
+            if hop:
+                self._last_end = self._clock()  # request trước vừa kết thúc
+                self._wait_turn()
+            response = self.session.get(
+                current, stream=True, timeout=self._timeout, allow_redirects=False
+            )
+            if response.status_code not in _REDIRECT_CODES:
+                return response
+            location = response.headers.get("Location", "")
+            response.close()
+            target = urljoin(current, location) if location else ""
+            parsed = urlparse(target)
+            if parsed.hostname != ALLOWED_HOST or parsed.scheme != "https":
+                raise ForbiddenRedirectError(
+                    f"redirect sang {target or '(thieu Location)'}, chi duoc dung {ALLOWED_HOST}"
+                )
+            current = target
+        raise FetchError(f"qua {MAX_REDIRECTS} lan redirect: {url}")
+
+    @staticmethod
+    def _check_complete(response: requests.Response, body: bytes) -> None:
+        """[Review #1] So số byte nhận được với ``Content-Length`` để phát hiện tải thiếu.
+
+        Khi server gắn ``Content-Encoding`` (gzip/deflate) thì ``iter_content`` đã giải nén, nên
+        ``len(body)`` không so được với Content-Length: lúc đó đối chiếu số byte THÔ đã đọc từ
+        socket (``response.raw.tell()``), và bỏ qua phép so nếu không lấy được.
+
+        Raises:
+            requests.exceptions.ChunkedEncodingError: Khi nhận ít hơn Content-Length. Đây là
+                ``RequestException`` nên vòng thử lại trong ``get`` sẽ tải lại.
+        """
+        header = str(response.headers.get("Content-Length", ""))
+        if not header.isdigit():
+            return
+        expected = int(header)
+        encoding = str(response.headers.get("Content-Encoding", "") or "identity").lower()
+        if encoding == "identity":
+            received = len(body)
+        else:
+            tell = getattr(getattr(response, "raw", None), "tell", None)
+            if tell is None:
+                return
+            try:
+                received = tell()
+            except (OSError, ValueError):
+                return
+        if received < expected:
+            raise requests.exceptions.ChunkedEncodingError(
+                f"tai thieu: nhan {received}/{expected} byte"
+            )
+
     def _read_body(self, response: requests.Response) -> bytes:
-        """Đọc body theo từng khối, dừng khi vượt ``MAX_DOWNLOAD_BYTES``."""
+        """Đọc body theo từng khối, dừng khi vượt ``MAX_DOWNLOAD_BYTES``.
+
+        Raises:
+            TooLargeError: Khi vượt giới hạn (không thử lại, chốt record rỗng ``too_large``).
+            requests.exceptions.ChunkedEncodingError: Khi tải thiếu so với Content-Length.
+        """
         chunks: list[bytes] = []
         total = 0
         for chunk in response.iter_content(chunk_size=1 << 16):
             total += len(chunk)
             if total > MAX_DOWNLOAD_BYTES:
-                raise FetchError("file tai ve qua lon")
+                raise TooLargeError("file tai ve qua lon", downloaded=total)
             chunks.append(chunk)
-        return b"".join(chunks)
+        body = b"".join(chunks)
+        self._check_complete(response, body)
+        return body
 
     def get(self, url: str) -> FetchResult:
         """Tải một URL, thử lại khi lỗi tạm thời.
@@ -398,6 +550,8 @@ class PoliteFetcher:
 
         Raises:
             CrawlBlockedError: Khi nhận HTTP 403 (dừng ngay, không thử lại).
+            TooLargeError: Khi body vượt ``MAX_DOWNLOAD_BYTES`` (không thử lại).
+            ForbiddenRedirectError: Khi bị chuyển hướng ra ngoài ``export.arxiv.org``.
             FetchError: Khi hết số lần thử lại mà vẫn lỗi, hoặc gặp mã HTTP bất thường.
         """
         started = self._clock()
@@ -406,7 +560,7 @@ class PoliteFetcher:
             self._wait_turn()
             retry_after: float | None = None
             try:
-                response = self.session.get(url, stream=True, timeout=self._timeout)
+                response = self._request(url)  # không tự theo redirect (xem _request)
                 try:
                     status = response.status_code
                     if status == 403:
@@ -450,6 +604,60 @@ def _iso_date(value: str | None) -> str | None:
     return None
 
 
+def _n_versions(row: dict) -> int:
+    """Số version của một dòng discovery.
+
+    [Review #3] Trước đây thiếu/None thì âm thầm coi là 1 version: bài có 4 version vẫn chỉ tải
+    v1 rồi được đánh dấu hoàn tất. Giờ thiếu hoặc sai là LỖI, để không mất dữ liệu trong im lặng.
+
+    Raises:
+        ValueError: Khi ``n_versions`` thiếu, là None, không đọc được thành số, hoặc nhỏ hơn 1.
+    """
+    raw = row.get("n_versions")
+    if raw is None or isinstance(raw, bool):
+        raise ValueError(f"{row.get('arxiv_id', '?')}: thieu truong n_versions trong discovery")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{row.get('arxiv_id', '?')}: n_versions khong hop le: {raw!r}") from None
+    if value < 1:
+        raise ValueError(f"{row.get('arxiv_id', '?')}: n_versions phai >= 1, nhan {value}")
+    return value
+
+
+def _has_n_versions(row: dict) -> bool:
+    """True nếu ``_n_versions(row)`` đọc được."""
+    try:
+        _n_versions(row)
+    except ValueError:
+        return False
+    return True
+
+
+def _revised_dates(row: dict) -> tuple[list[str], list[int]]:
+    """Ngày của v2..vn và danh sách số version KHÔNG có ngày hợp lệ.
+
+    Dòng discovery chưa vá ``version_dates`` thì ngày version cuối lấy từ ``latest_version_date``.
+
+    Returns:
+        (revised_dates, missing): ``missing`` rỗng nghĩa là đủ ``n_versions - 1`` ngày.
+    """
+    n_versions = _n_versions(row)
+    version_dates = row.get("version_dates") or {}
+    revised: list[str] = []
+    missing: list[int] = []
+    for number in range(2, n_versions + 1):
+        value = version_dates.get(f"v{number}")
+        if value is None and number == n_versions:
+            value = row.get("latest_version_date")
+        date = _iso_date(value)
+        if date:
+            revised.append(date)
+        else:
+            missing.append(number)
+    return revised, missing
+
+
 def build_metadata(row: dict) -> dict:
     """Dựng nội dung ``metadata.json`` (schema ``Paper``) từ một dòng discovery.
 
@@ -463,16 +671,20 @@ def build_metadata(row: dict) -> dict:
         Dict JSON-hóa được, đã qua kiểm tra của ``Paper`` (ID hợp lệ, không có trường lạ) khi
         ``src.schemas`` import được.
     """
-    n_versions = int(row.get("n_versions") or 1)
-    version_dates = row.get("version_dates") or {}
-    revised: list[str] = []
-    for number in range(2, n_versions + 1):
-        value = version_dates.get(f"v{number}")
-        if value is None and number == n_versions:
-            value = row.get("latest_version_date")
-        date = _iso_date(value)
-        if date:
-            revised.append(date)
+    revised, missing = _revised_dates(row)
+    if missing:
+        # [Review #9] Thiếu ngày của vài version giữa chừng: revised_dates ngắn hơn
+        # n_versions - 1 và các ngày còn lại bị dồn lệch vị trí. Schema Paper không cho thêm
+        # trường lạ nên không gắn cờ vào metadata.json; cờ đi vào summary
+        # (``revised_dates_incomplete``) qua _write_metadata_once.
+        logger.warning(
+            "%s: thieu ngay cua version %s -> revised_dates co %d/%d phan tu, "
+            "cac ngay con lai co the bi lech vi tri",
+            row.get("arxiv_id"),
+            missing,
+            len(revised),
+            _n_versions(row) - 1,
+        )
     metadata = {
         "arxiv_id": row["arxiv_id"],
         "title": row.get("title") or None,
@@ -523,6 +735,145 @@ def select_papers(
     return rows[:limit] if limit else rows
 
 
+def find_ids_not_in_discovery(
+    papers: list[dict], id_start: str, id_end: str
+) -> list[str] | None:
+    """[Review #3] ID nằm trong dải được giao nhưng discovery không có (``select_papers`` bỏ qua).
+
+    Chỉ tính được khi hai đầu dải cùng tháng (``YYMM``) và cùng độ rộng số thứ tự, vì khi đó
+    mọi số ở giữa đều là ID có thể tồn tại. Dải đi qua nhiều tháng thì không biết mỗi tháng có
+    bao nhiêu bài. Lưu ý: ID "thiếu" có thể là bài bị bộ lọc của discovery loại hợp lệ, hoặc
+    ID không tồn tại trên arXiv; danh sách này chỉ để đo độ phủ, không tự động là lỗi.
+
+    Args:
+        papers: Các bài đã chọn bằng ``select_papers`` (chưa cắt ``limit``).
+        id_start: ID đầu dải.
+        id_end: ID cuối dải.
+
+    Returns:
+        Danh sách ID thiếu (sắp xếp), hoặc None nếu dải không tính được.
+    """
+    start, end = _FULL_ID.match(id_start), _FULL_ID.match(id_end)
+    if not start or not end:
+        return None
+    if start["prefix"] != end["prefix"] or len(start["number"]) != len(end["number"]):
+        return None
+    width = len(start["number"])
+    have = {row["arxiv_id"] for row in papers}
+    return [
+        f"{start['prefix']}.{number:0{width}d}"
+        for number in range(int(start["number"]), int(end["number"]) + 1)
+        if f"{start['prefix']}.{number:0{width}d}" not in have
+    ]
+
+
+def add_coverage(
+    summary: dict, papers: list[dict], id_start: str, id_end: str, limit: int | None = None
+) -> None:
+    """[Review #3] Ghi độ phủ so với dải được giao vào ``summary`` và in cảnh báo.
+
+    Thêm các khóa ``ids_not_in_discovery`` (danh sách, hoặc None nếu không tính được),
+    ``ids_not_in_discovery_count`` và ``range_size``. Khi dùng ``limit`` thì bỏ qua, vì
+    ``papers`` bị cắt chủ ý và mọi ID sau điểm cắt sẽ bị tính là thiếu.
+    """
+    missing = None if limit else find_ids_not_in_discovery(papers, id_start, id_end)
+    summary["ids_not_in_discovery"] = missing
+    summary["ids_not_in_discovery_count"] = None if missing is None else len(missing)
+    if missing is None:
+        logger.info("Khong tinh duoc do phu so voi dai %s -> %s (limit hoac dai nhieu thang)",
+                    id_start, id_end)
+        return
+    if missing:
+        logger.warning(
+            "%d ID trong dai %s -> %s KHONG co trong discovery (VD: %s)",
+            len(missing),
+            id_start,
+            id_end,
+            ", ".join(missing[:5]),
+        )
+
+
+def validate_n_versions(papers: list[dict]) -> None:
+    """[Review #3] Kiểm tra MỌI dòng có ``n_versions`` hợp lệ TRƯỚC khi bắt đầu crawl.
+
+    Raises:
+        ValueError: Liệt kê (tối đa 10) ID thiếu/sai ``n_versions``.
+    """
+    bad = [str(row.get("arxiv_id", "?")) for row in papers if not _has_n_versions(row)]
+    if bad:
+        raise ValueError(
+            f"{len(bad)} bai thieu/sai n_versions trong discovery (se chi tai v1 va mat du lieu), "
+            f"VD: {bad[:10]}"
+        )
+
+
+def fetch_n_versions_from_api(fetcher: "PoliteFetcher", arxiv_ids: list[str]) -> dict[str, int]:
+    """[Review #3] Tra số version mới nhất của các bài qua arXiv API theo lô.
+
+    Đi qua ``fetcher`` nên vẫn tuân thủ delay 3 giây, một kết nối, dừng khi 403. ID entry trong
+    Atom feed có dạng ``.../abs/2506.00788v3``: phần ``v3`` chính là số version mới nhất.
+
+    Args:
+        fetcher: Bộ tải lịch sự.
+        arxiv_ids: ID cần tra.
+
+    Returns:
+        ID -> n_versions của những bài tra được (ID không tra được thì vắng mặt).
+
+    Raises:
+        CrawlBlockedError: Khi arXiv trả HTTP 403.
+    """
+    found: dict[str, int] = {}
+    for start in range(0, len(arxiv_ids), API_BATCH):
+        batch = arxiv_ids[start : start + API_BATCH]
+        url = API_URL.format(ids=",".join(batch), n=len(batch))
+        try:
+            fetched = fetcher.get(url)
+            if fetched.status_code != 200:
+                continue
+            root = ET.fromstring(fetched.body)
+        except (FetchError, ET.ParseError) as exc:
+            logger.warning("Tra n_versions bang API that bai (lo %d): %s", start // API_BATCH, exc)
+            continue
+        for entry in root.iterfind(f"{_ATOM_NS}entry"):
+            match = _ATOM_ID.search(entry.findtext(f"{_ATOM_NS}id") or "")
+            if match:
+                found[match["id"]] = int(match["n"])
+    return found
+
+
+def resolve_n_versions(
+    papers: list[dict], fetcher: "PoliteFetcher", *, api_fallback: bool = True
+) -> list[str]:
+    """[Review #3] Đảm bảo mọi bài có ``n_versions``; bài thiếu thì tra API (nếu được phép).
+
+    Cập nhật ``row["n_versions"]`` TRONG BỘ NHỚ (không sửa file discovery).
+
+    Args:
+        papers: Dòng discovery sẽ crawl.
+        fetcher: Bộ tải lịch sự dùng cho API.
+        api_fallback: False thì không tra API, bài thiếu sẽ làm ``validate_n_versions`` báo lỗi.
+
+    Returns:
+        Danh sách ID đã được điền ``n_versions`` từ API.
+
+    Raises:
+        ValueError: Khi sau khi tra API vẫn còn bài thiếu/sai ``n_versions``.
+        CrawlBlockedError: Khi arXiv trả HTTP 403.
+    """
+    from_api: list[str] = []
+    missing = [row for row in papers if not _has_n_versions(row)]
+    if missing and api_fallback:
+        logger.warning("%d bai thieu n_versions, tra arXiv API", len(missing))
+        found = fetch_n_versions_from_api(fetcher, [row["arxiv_id"] for row in missing])
+        for row in missing:
+            if row["arxiv_id"] in found:
+                row["n_versions"] = found[row["arxiv_id"]]
+                from_api.append(row["arxiv_id"])
+    validate_n_versions(papers)
+    return from_api
+
+
 def load_log_state(log_path: Path) -> dict[tuple[str, int], dict]:
     """Đọc log và trả về dòng MỚI NHẤT của từng (arxiv_id, version).
 
@@ -540,14 +891,45 @@ def load_log_state(log_path: Path) -> dict[tuple[str, int], dict]:
 
 
 def _peak_rss_mb() -> float | None:
-    """RAM đỉnh của tiến trình (MB) nếu có ``psutil``; None nếu không đo được."""
+    """RAM ĐỈNH của tiến trình (MB); None nếu không đo được.
+
+    [Review #4] ``info.rss`` chỉ là RAM tại thời điểm gọi chứ không phải đỉnh. Dùng
+    ``resource.getrusage`` (Linux/macOS), Windows không có thì dùng ``peak_wset`` của psutil.
+    """
+    try:
+        import resource  # noqa: PLC0415  (không có trên Windows)
+
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # ru_maxrss: KB trên Linux, byte trên macOS
+        return round(peak / (1024 * 1024 if sys.platform == "darwin" else 1024), 1)
+    except ImportError:
+        try:
+            import psutil  # noqa: PLC0415
+
+            info = psutil.Process().memory_info()
+            return round(getattr(info, "peak_wset", info.rss) / 2**20, 1)
+        except ImportError:
+            return None
+
+
+def _current_rss_mb() -> float | None:
+    """RAM hiện tại (MB) của tiến trình; None nếu không đo được.
+
+    Gọi sau mỗi version và ghi vào log (``rss_mb``) để ``summarize`` tính RAM TRUNG BÌNH
+    (đề yêu cầu), vì peak một mình không cho biết mức dùng điển hình.
+    """
     try:
         import psutil  # noqa: PLC0415
+
+        return round(psutil.Process().memory_info().rss / 2**20, 1)
     except ImportError:
+        pass
+    try:  # Linux không có psutil: đọc /proc (cột 2 của statm là số trang resident)
+        with open("/proc/self/statm", encoding="ascii") as handle:
+            pages = int(handle.read().split()[1])
+        return round(pages * os.sysconf("SC_PAGE_SIZE") / 2**20, 1)
+    except (OSError, ValueError, IndexError, AttributeError):
         return None
-    info = psutil.Process().memory_info()
-    peak = getattr(info, "peak_wset", None) or info.rss  # Windows có peak_wset
-    return round(peak / 1024 / 1024, 1)
 
 
 def _dir_bytes(path: Path) -> int:
@@ -568,6 +950,9 @@ def summarize(
 
     Returns:
         Dict tổng hợp: số bài/version theo trạng thái, size_before/size_after, tỉ lệ nén...
+        Thời gian và RAM lấy từ LOG nên không lệch sau resume (khác ``elapsed_this_run_s``):
+        ``wall_seconds_*``, ``seconds_per_paper*`` và ``rss_mb_*``. Log cũ chưa có
+        ``wall_seconds``/``rss_mb`` thì bị bỏ qua (xem ``versions_with_wall_seconds``).
     """
     expected = {(row["arxiv_id"], v) for row in papers for v in range(1, _n_versions(row) + 1)}
     records = [state[key] for key in expected if key in state]
@@ -576,6 +961,16 @@ def summarize(
     size_before = sum(r.get("size_before") or 0 for r in records)
     size_after = sum(r.get("size_after") or 0 for r in records)
     seconds = [r["seconds"] for r in records if r.get("seconds") is not None]
+    # [Review #5] wall_seconds = fetch + giải nén + ghi đĩa (đã gồm thời gian chờ delay);
+    # cộng theo arxiv_id để có thời gian mỗi bài. Bài mới crawl dở thì tổng mới là phần đã xong.
+    wall = [r["wall_seconds"] for r in records if r.get("wall_seconds") is not None]
+    per_paper: dict[str, float] = {}
+    for record in records:
+        if record.get("wall_seconds") is not None:
+            per_paper[record["arxiv_id"]] = (
+                per_paper.get(record["arxiv_id"], 0.0) + record["wall_seconds"]
+            )
+    rss = [r["rss_mb"] for r in records if r.get("rss_mb") is not None]
     return {
         "papers": len(papers),
         "versions_expected": len(expected),
@@ -596,19 +991,29 @@ def summarize(
         "size_after_bytes": size_after,
         "size_after_over_before": round(size_after / size_before, 4) if size_before else None,
         "seconds_per_version_mean": round(sum(seconds) / len(seconds), 3) if seconds else None,
-        "elapsed_this_run_s": round(elapsed_s, 1),
-        "peak_rss_mb": _peak_rss_mb(),
+        "versions_with_wall_seconds": len(wall),
+        "wall_seconds_total": round(sum(wall), 1),
+        "wall_seconds_per_version_mean": round(sum(wall) / len(wall), 3) if wall else None,
+        "seconds_per_paper_mean": (
+            round(sum(per_paper.values()) / len(per_paper), 2) if per_paper else None
+        ),
+        "seconds_per_paper_max": round(max(per_paper.values()), 2) if per_paper else None,
+        "seconds_per_paper": {pid: round(sec, 2) for pid, sec in sorted(per_paper.items())},
+        "elapsed_this_run_s": round(elapsed_s, 1),  # chỉ lần chạy này, lệch sau resume
+        "rss_mb_mean": round(sum(rss) / len(rss), 1) if rss else None,  # trung bình các mẫu/log
+        "rss_mb_max_logged": max(rss) if rss else None,
+        "peak_rss_mb": _peak_rss_mb(),  # đỉnh của TIẾN TRÌNH lần chạy này
         "output_dir_bytes": _dir_bytes(out_dir) if out_dir.exists() else 0,
     }
 
 
-def _n_versions(row: dict) -> int:
-    """Số version của một dòng discovery (tối thiểu 1: bài chỉ nộp một lần dùng v1)."""
-    return max(1, int(row.get("n_versions") or 1))
-
-
 def crawl_version(
-    fetcher: PoliteFetcher, row: dict, version: int, folder: Path, log_path: Path
+    fetcher: PoliteFetcher,
+    row: dict,
+    version: int,
+    folder: Path,
+    log_path: Path,
+    prev_soft_errors: int = 0,
 ) -> dict:
     """Tải, lọc và ghi MỘT version; luôn ghi một dòng log.
 
@@ -618,9 +1023,12 @@ def crawl_version(
         version: Số version.
         folder: Thư mục của bài.
         log_path: File log checkpoint.
+        prev_soft_errors: Số lần version này đã gặp ``RETRYABLE_REASONS`` ở các lần chạy trước
+            (lấy từ ``soft_errors`` trong log; ``run`` truyền vào).
 
     Returns:
-        Bản ghi log vừa ghi (đã có ``status``).
+        Bản ghi log vừa ghi (đã có ``status``). Gặp ``RETRYABLE_REASONS`` mà chưa hết
+        ``MAX_SOFT_RETRIES`` lượt thì ``status`` là ``error`` và KHÔNG tạo thư mục ``v{n}``.
 
     Raises:
         CrawlBlockedError: Khi arXiv trả HTTP 403 (đã ghi log ``blocked`` trước khi raise).
@@ -629,58 +1037,114 @@ def crawl_version(
     url = SRC_URL.format(arxiv_id=arxiv_id, version=version)
     record: dict = {"arxiv_id": arxiv_id, "version": version, "url": url}
     started = time.monotonic()
+    extracted: Extracted | None = None
     try:
         fetched = fetcher.get(url)
     except CrawlBlockedError as exc:
         record.update(status=STATUS_BLOCKED, reason=str(exc))
         append_jsonl(log_path, record)
         raise
+    except TooLargeError as exc:
+        # [Review #1] Quá lớn thì thử lại cũng vô ích: chốt record rỗng với reason too_large.
+        fetched = FetchResult(200, b"", None, 1, time.monotonic() - started)
+        extracted = Extracted(STATUS_EMPTY, "too_large", size_before=exc.downloaded)
     except FetchError as exc:
+        elapsed = round(time.monotonic() - started, 2)
         record.update(
-            status=STATUS_ERROR, reason=str(exc), seconds=round(time.monotonic() - started, 2)
+            status=STATUS_ERROR,
+            reason=str(exc),
+            soft_errors=prev_soft_errors,  # giữ bộ đếm, lỗi mạng không làm nó về 0
+            seconds=elapsed,
+            wall_seconds=elapsed,
+            rss_mb=_current_rss_mb(),
         )
         append_jsonl(log_path, record)
         return record
-    if fetched.status_code in (404, 410):
-        extracted = Extracted(STATUS_EMPTY, f"http_{fetched.status_code}")
-    else:
-        extracted = extract_tex_sources(fetched.body)
-    write_version(folder, version, extracted.files)
+
+    # [Review #2] extract_tex_sources và write_version nằm TRONG try: một version lỗi (đĩa đầy,
+    # tên file lạ, MemoryError...) chỉ ghi log "error" kèm tên lỗi rồi đi tiếp. Việc dừng cả
+    # chương trình do lỗi liên tiếp đã có max_consecutive_errors lo trong run().
+    status: str = STATUS_ERROR
+    reason: str | None = None
+    soft_errors = prev_soft_errors
+    wrote = False
+    try:
+        if extracted is None:
+            if fetched.status_code in (404, 410):
+                extracted = Extracted(STATUS_EMPTY, f"http_{fetched.status_code}")
+            else:
+                extracted = extract_tex_sources(fetched.body)
+        retryable = extracted.reason in RETRYABLE_REASONS
+        if retryable:
+            soft_errors = prev_soft_errors + 1
+        if retryable and soft_errors < MAX_SOFT_RETRIES:
+            # [Review #1] html_response / corrupt_archive: ghi error, KHÔNG gọi write_version
+            # (không tạo v{n}) nên resume sẽ thử lại. Lần thứ MAX_SOFT_RETRIES mà vẫn gặp thì
+            # rơi xuống nhánh dưới và chốt empty.
+            status, reason = STATUS_ERROR, extracted.reason
+        else:
+            write_version(folder, version, extracted.files)
+            wrote = True
+            status, reason = extracted.status, extracted.reason
+    except Exception as exc:  # noqa: BLE001  (cố ý bắt rộng: một version hỏng không giết pipeline)
+        logger.exception("Loi khi xu ly %sv%d", arxiv_id, version)
+        status, reason = STATUS_ERROR, f"{type(exc).__name__}: {str(exc)[:300]}"
+    if extracted is None:  # lỗi xảy ra ngay lúc giải nén: không có số liệu phân tích
+        extracted = Extracted(STATUS_ERROR)
+    kept = extracted.files if wrote else {}
     record.update(
-        status=extracted.status,
-        reason=extracted.reason,
+        status=status,
+        reason=reason,
+        soft_errors=soft_errors,
         http_status=fetched.status_code,
         content_type=fetched.content_type,
         attempts=fetched.attempts,
-        archive_bytes=len(fetched.body),
+        archive_bytes=len(fetched.body) or extracted.size_before,
         size_before=extracted.size_before,
-        size_after=extracted.size_after,
+        size_after=extracted.size_after if wrote else 0,
         n_files_before=extracted.n_files_before,
-        n_files_after=len(extracted.files),
-        files=sorted(extracted.files)[:50],
+        n_files_after=len(kept),
+        files=sorted(kept)[:50],
         skipped=extracted.skipped[:20],
-        seconds=round(fetched.seconds, 2),
+        seconds=round(fetched.seconds, 2),  # chỉ phần tải (gồm chờ delay)
+        # [Review #5] toàn bộ version: tải + giải nén + ghi đĩa; rss_mb để tính RAM trung bình
+        wall_seconds=round(time.monotonic() - started, 2),
+        rss_mb=_current_rss_mb(),
     )
     append_jsonl(log_path, record)
     return record
 
 
-def _write_metadata_once(folder: Path, row: dict) -> None:
+def _write_metadata_once(folder: Path, row: dict) -> dict:
     """Ghi ``metadata.json`` của bài nếu chưa có (không cần mạng, nên làm trước khi tải).
 
     Args:
         folder: Thư mục của bài.
         row: Dòng discovery của bài.
+
+    Returns:
+        Dict các vấn đề phát hiện (rỗng nếu êm): ``error`` (str) khi không dựng được metadata
+        hợp lệ, ``revised_dates_missing`` (list[int]) là các version thiếu ngày. ``run`` gom
+        chúng vào summary để không chỉ nằm trên console.
     """
+    issues: dict = {}
+    _, missing = _revised_dates(row)  # [Review #9] kiểm tra cả khi metadata.json đã có
+    if missing:
+        issues["revised_dates_missing"] = missing
     target = folder / "metadata.json"
     if target.exists():
-        return
+        return issues
     try:
         metadata = build_metadata(row)
-    except ValueError as exc:  # pydantic.ValidationError là con của ValueError
+    # [Review #7] pydantic.ValidationError là con của ValueError; thêm TypeError cho dữ liệu sai
+    # kiểu (authors không phải list...). Trả lỗi về cho run() ghi vào summary thay vì chỉ log.
+    except (ValueError, TypeError) as exc:
         logger.error("metadata %s khong hop le: %s", row["arxiv_id"], exc)
-        return
+        issues["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+        return issues
+    folder.mkdir(parents=True, exist_ok=True)
     write_json(target, metadata)
+    return issues
 
 
 def run(
@@ -691,6 +1155,7 @@ def run(
     write_metadata: bool = True,
     max_consecutive_errors: int = 10,
     resume: bool = True,
+    api_fallback: bool = True,
 ) -> dict:
     """Crawl lần lượt từng bài, từng version; có Checkpoint/Resume.
 
@@ -701,15 +1166,21 @@ def run(
         write_metadata: Ghi ``metadata.json`` cho mỗi bài.
         max_consecutive_errors: Dừng sau chừng này version lỗi LIÊN TIẾP.
         resume: True bỏ qua version đã xong theo log; False tải lại tất cả (ghi đè).
+        api_fallback: True thì bài thiếu ``n_versions`` được tra bằng arXiv API trước khi crawl.
 
     Returns:
-        Dict tổng hợp (``summarize``), có thêm khóa ``exit_code``.
+        Dict tổng hợp (``summarize``), có thêm khóa ``exit_code``, ``n_versions_from_api``,
+        ``metadata_errors`` và ``revised_dates_incomplete``.
 
     Raises:
+        ValueError: Khi còn bài thiếu/sai ``n_versions`` (kiểm tra TRƯỚC khi tải bất kỳ gì).
         CrawlBlockedError: Khi arXiv trả HTTP 403.
         CrawlAbortedError: Khi quá nhiều lỗi liên tiếp.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    # [Review #3] Kiểm tra (và nếu được, tự điền từ API) n_versions của TẤT CẢ bài trước khi
+    # crawl, để không có bài nào âm thầm chỉ tải v1.
+    from_api = resolve_n_versions(papers, fetcher, api_fallback=api_fallback)
     log_path = out_dir / LOG_NAME
     state = load_log_state(log_path) if resume else {}
     total = sum(_n_versions(row) for row in papers)
@@ -726,16 +1197,49 @@ def run(
     started = time.monotonic()
     fetched_now = 0
     consecutive_errors = 0
+    metadata_errors: list[dict] = []
+    revised_incomplete: list[dict] = []
     for index, row in enumerate(papers, start=1):
         folder = out_dir / to_folder_name(row["arxiv_id"])
         if write_metadata:
-            _write_metadata_once(folder, row)  # ghi TRƯỚC khi tải: ngắt giữa chừng vẫn có metadata
+            # ghi TRƯỚC khi tải: ngắt giữa chừng vẫn có metadata
+            issues = _write_metadata_once(folder, row)
+            if "error" in issues:
+                metadata_errors.append({"arxiv_id": row["arxiv_id"], "error": issues["error"]})
+            if "revised_dates_missing" in issues:
+                revised_incomplete.append(
+                    {"arxiv_id": row["arxiv_id"], "missing_versions": issues["revised_dates_missing"]}
+                )
         for version in range(1, _n_versions(row) + 1):
             previous = state.get((row["arxiv_id"], version), {})
             if previous.get("status") in TERMINAL_STATUSES and (folder / f"v{version}").is_dir():
                 continue  # resume: version này đã xong
-            folder.mkdir(parents=True, exist_ok=True)
-            record = crawl_version(fetcher, row, version, folder, log_path)
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                record = crawl_version(
+                    fetcher,
+                    row,
+                    version,
+                    folder,
+                    log_path,
+                    # [Review #1] truyền bộ đếm "lỗi mềm" từ log để giới hạn số lần thử lại
+                    prev_soft_errors=int(previous.get("soft_errors") or 0),
+                )
+            except (CrawlBlockedError, CrawlAbortedError):
+                raise  # phải dừng cả chương trình
+            except Exception as exc:  # noqa: BLE001  [Review #2] lưới an toàn cuối cùng
+                logger.exception("Loi bat ngo o %sv%d", row["arxiv_id"], version)
+                record = {
+                    "arxiv_id": row["arxiv_id"],
+                    "version": version,
+                    "status": STATUS_ERROR,
+                    "reason": f"{type(exc).__name__}: {str(exc)[:300]}",
+                    "soft_errors": int(previous.get("soft_errors") or 0),
+                }
+                try:
+                    append_jsonl(log_path, record)
+                except OSError:
+                    logger.error("Khong ghi duoc log cho %sv%d", row["arxiv_id"], version)
             state[(row["arxiv_id"], version)] = record
             fetched_now += 1
             consecutive_errors = consecutive_errors + 1 if record["status"] == STATUS_ERROR else 0
@@ -746,6 +1250,12 @@ def run(
                 )
     summary = summarize(state, papers, out_dir, time.monotonic() - started)
     summary["exit_code"] = 1 if summary["by_status"].get(STATUS_ERROR) else 0
+    summary["n_versions_from_api"] = from_api
+    # [Review #7, #9] Đưa vào summary (và file riêng) thay vì chỉ log ra console
+    summary["metadata_errors"] = metadata_errors
+    summary["revised_dates_incomplete"] = revised_incomplete
+    if metadata_errors:
+        write_json(out_dir / METADATA_ERRORS_NAME, metadata_errors)
     return summary
 
 
@@ -808,6 +1318,7 @@ def crawl_paper(
     delay: float = MIN_DELAY_S,
     write_metadata: bool = True,
     resume: bool = True,
+    api_fallback: bool = True,
     fetcher: PoliteFetcher | None = None,
 ) -> dict:
     """Crawl MỌI version của MỘT bài, ghi vào ``<out_dir>/<yymm-id>/v{n}/``.
@@ -824,13 +1335,15 @@ def crawl_paper(
         delay: Giây giữa hai request, tối thiểu 3.
         write_metadata: Ghi ``metadata.json``.
         resume: True bỏ qua version đã xong theo log; False tải lại.
+        api_fallback: True thì thiếu ``n_versions`` trong discovery sẽ tra arXiv API.
         fetcher: Bộ tải có sẵn (tests truyền bản giả); None là tạo mới.
 
     Returns:
         Dict tổng hợp (như ``crawl_range``) kèm khóa ``versions``: trạng thái từng version.
 
     Raises:
-        ValueError: Khi ID sai dạng, bài không có trong discovery, hoặc thiếu email liên hệ.
+        ValueError: Khi ID sai dạng, bài không có trong discovery, thiếu ``n_versions`` (mà tra
+            API cũng không ra), hoặc thiếu email liên hệ.
         CrawlBlockedError: Khi arXiv trả HTTP 403.
         CrawlAbortedError: Khi quá nhiều lỗi liên tiếp.
     """
@@ -840,7 +1353,14 @@ def crawl_paper(
         raise ValueError(f"{arxiv_id} khong co trong discovery {discovery_path} (can n_versions)")
     fetcher = fetcher or PoliteFetcher(USER_AGENT.format(contact=_require_contact(contact)), delay)
     out_dir = Path(out_dir)
-    summary = run([row], out_dir, fetcher, write_metadata=write_metadata, resume=resume)
+    summary = run(
+        [row],
+        out_dir,
+        fetcher,
+        write_metadata=write_metadata,
+        resume=resume,
+        api_fallback=api_fallback,
+    )
     state = load_log_state(out_dir / LOG_NAME)
     summary["versions"] = [
         {
@@ -865,6 +1385,7 @@ def crawl_range(
     limit: int | None = None,
     write_metadata: bool = True,
     max_consecutive_errors: int = 10,
+    api_fallback: bool = True,
     fetcher: PoliteFetcher | None = None,
 ) -> dict:
     """Crawl mọi bài trong ``[id_start, id_end]``, có Checkpoint/Resume.
@@ -883,14 +1404,17 @@ def crawl_range(
         limit: Chỉ crawl N bài đầu (chạy thử); None là hết.
         write_metadata: Ghi ``metadata.json`` cho mỗi bài.
         max_consecutive_errors: Dừng sau chừng này version lỗi liên tiếp.
+        api_fallback: True thì thiếu ``n_versions`` trong discovery sẽ tra arXiv API.
         fetcher: Bộ tải có sẵn (tests truyền bản giả); None là tạo mới.
 
     Returns:
-        Dict tổng hợp: số version theo trạng thái, size_before/size_after, ``exit_code``...
+        Dict tổng hợp: số version theo trạng thái, size_before/size_after, ``exit_code``,
+        ``ids_not_in_discovery``...
 
     Raises:
         FileNotFoundError: Khi không thấy file discovery.
-        ValueError: Khi không có bài nào trong dải, hoặc thiếu email liên hệ.
+        ValueError: Khi không có bài nào trong dải, thiếu email liên hệ, hoặc còn bài thiếu
+            ``n_versions``.
         CrawlBlockedError: Khi arXiv trả HTTP 403.
         CrawlAbortedError: Khi quá nhiều lỗi liên tiếp.
     """
@@ -909,7 +1433,9 @@ def crawl_range(
         write_metadata=write_metadata,
         max_consecutive_errors=max_consecutive_errors,
         resume=resume,
+        api_fallback=api_fallback,
     )
+    add_coverage(summary, papers, id_start, id_end, limit)  # [Review #3] độ phủ so với dải
     write_json(out_dir / SUMMARY_NAME, summary)
     return summary
 
@@ -944,7 +1470,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", default=None, type=int, help="Chi crawl N bai dau (chay thu)")
     add("--max_consecutive_errors", default=10, type=int)
     add("--no_metadata", action="store_true", help="Khong ghi metadata.json")
+    add(
+        "--no_api_fallback",
+        action="store_true",
+        help="Khong tra n_versions bang arXiv API khi discovery thieu (se bao loi)",
+    )
     return parser
+
+
+def _printable(summary: dict, max_items: int = 20) -> dict:
+    """Bản summary để IN: list/dict dài hơn ``max_items`` được rút gọn (file thì giữ đủ)."""
+    return {
+        key: (
+            f"<{len(value)} muc, xem day du trong {SUMMARY_NAME}>"
+            if isinstance(value, (list, dict)) and len(value) > max_items
+            else value
+        )
+        for key, value in summary.items()
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -985,7 +1528,11 @@ def main(argv: list[str] | None = None) -> int:
             write_metadata=not args.no_metadata,
             max_consecutive_errors=args.max_consecutive_errors,
             resume=not args.fresh,
+            api_fallback=not args.no_api_fallback,
         )
+    except ValueError as exc:  # [Review #3] thieu n_versions: dung truoc khi tai gi
+        print(f"LOI du lieu discovery: {exc}", file=sys.stderr)
+        return 2
     except CrawlBlockedError as exc:
         print(f"\nBI CHAN: {exc}. DUNG NGAY. Cho vai gio, kiem tra User-Agent/delay roi chay lai.")
         return 3
@@ -995,8 +1542,13 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nDa dung theo yeu cau. Chay lai CUNG LENH de tiep tuc.")
         return 1
+    add_coverage(summary, papers, args.id_start, args.id_end, args.limit)
     write_json(args.out / SUMMARY_NAME, summary)
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    print(json.dumps(_printable(summary), indent=2, ensure_ascii=False))
+    missing_ids = summary.get("ids_not_in_discovery")
+    if missing_ids:
+        print(f"CANH BAO: {len(missing_ids)} ID trong dai khong co trong discovery (VD: "
+              f"{', '.join(missing_ids[:5])}); day du trong {SUMMARY_NAME}")
     print(
         f"Tong ket ghi o {args.out / SUMMARY_NAME} (lan chay nay {time.monotonic() - started:.0f}s)"
     )
