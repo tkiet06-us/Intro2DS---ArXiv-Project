@@ -7,11 +7,14 @@ Cách dùng:
     tensor = build_feature_matrix(entries, candidates)  # shape (m, n, len(FEATURE_NAMES))
     tensor[i, j] là vector đặc trưng của cặp (entries[i], candidates[j]).
 
-Quy ước thiếu dữ liệu : feature so sánh hai phía mà thiếu đầu vào
-thì trả NaN, KHÔNG trả 0. Giá trị 0 chỉ dành cho "có dữ liệu nhưng không giống". Các cờ has_*
-luôn là 0/1. Mô hình nhận vector này phải xử lý NaN: mô hình cây (LightGBM,
-XGBoost, HistGradientBoosting) nhận NaN trực tiếp; Logistic Regression cần SimpleImputer fit
-trên Train.
+Quy ước thiếu dữ liệu (hai tầng; riêng ba cột composite_* thì tự xử lý NaN ngay khi tính, không chờ tầng 2):
+    1. Khi TÍNH feature: feature so sánh hai phía mà thiếu đầu vào thì trả NaN, KHÔNG trả 0.
+       Giá trị 0 chỉ dành cho "có dữ liệu nhưng không giống". Các cờ has_* luôn là 0/1. Tầng
+       này cần giữ NaN vì composite_score dựa vào NaN để bỏ tín hiệu thiếu và chia lại trọng số.
+    2. Sau khi tính xong (kể cả ba cột composite_*): fill_missing_features điền NaN bằng giá trị
+       CÓ Ý NGHĨA theo từng feature (bảng MISSING_FILL_VALUES), ví dụ "không rõ năm" -> year_diff
+       trung tính 0.5 chứ không phải 0 (0 nghĩa là trùng năm). Bật bằng build_feature_matrix(...,
+       fill_missing=True); mô hình nhận tensor này không cần imputer nữa.
 
 Tham khảo:
     - Levenshtein: "Binary codes capable of correcting deletions, insertions and reversals",
@@ -46,12 +49,13 @@ FEATURE_NAMES: tuple[str, ...] = (
     "author_surname_jaccard",  # Jaccard trên tập họ tác giả
     "year_match",  # cùng năm
     "year_diff",  # chênh lệch năm tuyệt đối, chuẩn hóa về 0..1
-    "year_signed_diff",  # (năm ứng viên - năm mục) chuẩn hóa về -1..1; preprint thường <= 0
     "has_title",  # cả hai bên đều có tiêu đề
     "has_authors",  # cả hai bên đều có tác giả
     "has_year",  # cả hai bên đều có năm
     # Ba feature "ngữ cảnh" so sánh một cặp với các cặp khác trong cùng bài; chỉ tính được ở
     # build_feature_matrix (single-pair build_features để NaN). Điểm gốc: composite_score.
+    # Theo spec của Kiệt, ở build_feature_matrix ba cột này KHÔNG bao giờ NaN: thiếu tiêu đề
+    # thì hạng = 1.0 (tệ nhất), margin = 0.0 (trung tính); pool chỉ có 1 phần tử thì hạng = 0.0.
     "composite_rank_in_pool",  # hạng phân vị theo HÀNG: 0 = ref khớp nhất với entry, 1 = tệ nhất
     "composite_margin",  # điểm - điểm cao nhất của các ref còn lại cùng hàng (>0 nếu đứng nhất)
     "composite_col_rank_in_paper",  # hạng phân vị theo CỘT: 0 = entry khớp nhất với ref này
@@ -68,6 +72,38 @@ COMPOSITE_WEIGHTS: dict[str, float] = {
     "author_surname_jaccard": 0.10,
     "year_match": 0.05,
 }
+# Giá trị điền khi một feature bị NaN (thiếu dữ liệu), chọn theo Ý NGHĨA của từng feature chứ
+# không phải median. Nguyên tắc: "thiếu" không được giả làm "rất giống" hay "rất khác"; việc thiếu
+# vốn đã được cờ has_title/has_authors/has_year báo cho mô hình. Hằng số cố định (không fit từ
+# dữ liệu) nên dùng được nguyên xi cho Train, Valid, Test.
+MISSING_FILL_VALUES: dict[str, float] = {
+    # Không có trường nào để dò ID, hoặc ứng viên không có ID: không có bằng chứng -> 0.
+    "arxiv_id_in_fields": 0.5,
+    # Độ giống tiêu đề/tác giả: thiếu dữ liệu thì không có bằng chứng giống -> 0.
+    "title_lev_sim": 0.5,
+    "title_word_jaccard": 0.5,
+    "title_char3_jaccard": 0.5,
+    "title_token_set": 0.5,
+    "title_containment": 0.5,
+    "title_tfidf_cos": 0.5,
+    "first_author_match": 0.5,
+    "author_surname_jaccard": 0.5,
+    "year_match": 0.5,
+    # year_diff là KHOẢNG CÁCH (0 = trùng năm, tốt nhất) nên không thể điền 0: điền giữa dải.
+    "year_diff": 0.5,
+    # Cờ có/không: không bao giờ NaN, điền 0 chỉ để bảng đầy đủ cột.
+    "has_title": 0.0,
+    "has_authors": 0.0,
+    "has_year": 0.0,
+    # Ba cột ngữ cảnh: build_feature_matrix đã tự xử lý thiếu theo spec của Kiệt nên không còn NaN;
+    # giá trị dưới đây chỉ dùng cho đường single-pair build_features (không có ma trận để xếp
+    # hạng). Cùng quy ước: không tính được điểm -> hạng 1.0 (tệ nhất), margin 0.0 (trung tính).
+    "composite_rank_in_pool": 1.0,
+    "composite_margin": 0.0,
+    "composite_col_rank_in_paper": 1.0,
+}
+assert set(MISSING_FILL_VALUES) == set(FEATURE_NAMES), "mỗi feature phải có giá trị điền"
+
 # Làm tròn điểm trước khi xếp hạng để hai điểm "bằng nhau" sai khác ~1e-16 vẫn được coi là hòa.
 RANK_DECIMALS = 9
 NAN = float("nan")
@@ -323,21 +359,21 @@ def _arxiv_id_in_fields(entry: _Prepared, candidate: _Prepared) -> float:
     return float(candidate.arxiv_id in entry.arxiv_ids)
 
 
-def _year_features(entry: _Prepared, candidate: _Prepared) -> tuple[float, float, float, float]:
-    """Trả về (year_match, year_diff, year_signed_diff, has_year); ba giá trị đầu NaN nếu thiếu."""
+def _year_features(entry: _Prepared, candidate: _Prepared) -> tuple[float, float, float]:
+    """Trả về (year_match, year_diff, has_year); hai giá trị đầu NaN nếu thiếu."""
     if entry.year is None or candidate.year is None:
-        return NAN, NAN, NAN, 0.0
+        return NAN, NAN, 0.0
     signed = candidate.year - entry.year
     # Chặn hai đầu để một năm sai/lạ (ví dụ 2030) không tạo giá trị ngoại lai.
     capped = max(-YEAR_DIFF_CAP, min(YEAR_DIFF_CAP, signed))
-    return float(signed == 0), abs(capped) / YEAR_DIFF_CAP, capped / YEAR_DIFF_CAP, 1.0
+    return float(signed == 0), abs(capped) / YEAR_DIFF_CAP, 1.0
 
 
 def _pair_vector(entry: _Prepared, candidate: _Prepared, tfidf_cosine: float) -> list[float]:
     """Vector đặc trưng của một cặp; feature thiếu đầu vào là NaN, ba cột ngữ cảnh để NaN."""
     has_title = bool(entry.title and candidate.title)
     has_authors = bool(entry.authors and candidate.authors)
-    year_match, year_diff, year_signed_diff, has_year = _year_features(entry, candidate)
+    year_match, year_diff, has_year = _year_features(entry, candidate)
     if has_title:
         lev = title_levenshtein(entry.title, candidate.title)
         word_jaccard = jaccard(entry.words, candidate.words)
@@ -364,11 +400,10 @@ def _pair_vector(entry: _Prepared, candidate: _Prepared, tfidf_cosine: float) ->
         surname_jaccard,
         year_match,
         year_diff,
-        year_signed_diff,
         float(has_title),
         float(has_authors),
         has_year,
-        NAN,  # composite_rank_in_pool: chỉ tính được khi có cả ma trận
+        NAN,  # composite_rank_in_pool
         NAN,  # composite_margin
         NAN,  # composite_col_rank_in_paper
     ]
@@ -461,28 +496,32 @@ def composite_score_matrix(tensor: np.ndarray) -> np.ndarray:
 def _dense_percentile_rank(scores: np.ndarray) -> np.ndarray:
     """Hạng dense giảm dần chuẩn hóa về [0, 1] cho một vector điểm; 0 = tốt nhất.
 
-    Công thức: (dense_rank - 1) / (n_valid - 1), n_valid là số điểm không NaN. NaN nếu điểm
-    đó NaN hoặc chỉ có dưới 2 điểm hợp lệ (không có đối thủ nên không có "hạng").
+    Theo spec của Kiệt, với n = số phần tử của vector (cả pool hàng hoặc cả cột bài báo):
+        - điểm NaN (thiếu tiêu đề / không tính được): 1.0, tệ nhất;
+        - điểm hợp lệ: (dense_rank - 1) / max(1, n - 1). Vector chỉ có n = 1 phần tử hợp lệ
+          cho 0.0 (mặc định đứng đầu); một điểm hợp lệ duy nhất giữa các NaN cũng được 0.0.
+    Mẫu số là n (kích thước pool) chứ không phải số điểm hợp lệ, nên ô hợp lệ tệ nhất vẫn
+    nhỏ hơn 1.0 khi pool có ô NaN: "thiếu dữ liệu" luôn tệ hơn "có dữ liệu nhưng kém".
+    Không bao giờ trả NaN.
     """
-    result = np.full(scores.shape, NAN)
+    result = np.ones(scores.shape)
     valid = ~np.isnan(scores)
-    n_valid = int(valid.sum())
-    if n_valid < 2:
-        return result
-    rounded = np.round(scores[valid], RANK_DECIMALS)
-    # Điểm cao nhất -> chỉ số 0; điểm bằng nhau cùng chỉ số (dense rank, tính từ 0).
-    dense_index = np.searchsorted(np.unique(-rounded), -rounded)
-    result[valid] = dense_index / (n_valid - 1)
+    if valid.any():
+        rounded = np.round(scores[valid], RANK_DECIMALS)
+        # Điểm cao nhất -> chỉ số 0; điểm bằng nhau cùng chỉ số (dense rank, tính từ 0).
+        dense_index = np.searchsorted(np.unique(-rounded), -rounded)
+        result[valid] = dense_index / max(1, scores.size - 1)
     return result
 
 
 def _margin_by_row(scores: np.ndarray) -> np.ndarray:
     """Mỗi ô trừ điểm cao nhất của các ô KHÁC cùng hàng: S[i,j] - max_{k != j} S[i,k].
 
-    Dương nếu ref j đứng nhất hàng, 0 nếu hòa nhất, âm nếu thua. NaN nếu ô NaN hoặc hàng có
-    dưới 2 điểm hợp lệ.
+    Dương nếu ref j đứng nhất hàng, 0 nếu hòa nhất, âm nếu thua. Theo spec của Kiệt, ô NaN
+    (thiếu tiêu đề) hoặc hàng có dưới 2 điểm hợp lệ (không có đối thủ) nhận 0.0 (trung tính,
+    không có sự áp đảo). Không bao giờ trả NaN.
     """
-    result = np.full(scores.shape, NAN)
+    result = np.zeros(scores.shape)
     for i, row in enumerate(scores):
         valid = ~np.isnan(row)
         if valid.sum() < 2:
@@ -507,10 +546,36 @@ def _fill_context_features(tensor: np.ndarray) -> None:
     )
 
 
+def fill_missing_features(features: np.ndarray) -> np.ndarray:
+    """Điền mọi NaN bằng giá trị có ý nghĩa theo từng feature (MISSING_FILL_VALUES).
+
+    Phải gọi SAU khi đã tính xong ba cột composite_*: composite_score cần NaN để biết tín hiệu
+    nào thiếu mà bỏ đi. Nếu điền trước, feature thiếu sẽ bị tính như điểm 0 và kéo thấp điểm
+    tổng hợp một cách vô lý.
+
+    Args:
+        features: Mảng bất kỳ có trục cuối là len(FEATURE_NAMES), ví dụ (m, n, F) từ
+            build_feature_matrix, (n_pairs, F) hoặc một vector (F,).
+
+    Returns:
+        Mảng mới cùng shape, không còn NaN (mảng đầu vào không bị sửa).
+
+    Raises:
+        ValueError: Khi trục cuối không khớp số feature (thường do sai thứ tự/thiếu cột).
+    """
+    features = np.asarray(features, dtype=np.float64)
+    if features.ndim == 0 or features.shape[-1] != len(FEATURE_NAMES):
+        raise ValueError(f"Trục cuối phải có {len(FEATURE_NAMES)} cột, nhận shape {features.shape}")
+    fill = np.array([MISSING_FILL_VALUES[name] for name in FEATURE_NAMES])
+    # fill có shape (F,) nên tự broadcast theo trục cuối của features.
+    return np.where(np.isnan(features), fill, features)
+
+
 def build_feature_matrix(
     entries: list[Bibtex],
     candidates: list[Reference],
     raw_texts: list[str | None] | None = None,
+    fill_missing: bool = False,
 ) -> np.ndarray:
     """Tạo tensor đặc trưng cho ma trận m x n của MỘT bài báo.
 
@@ -523,10 +588,12 @@ def build_feature_matrix(
         entries: m mục BibTeX của bài.
         candidates: n reference arXiv của cùng bài.
         raw_texts: Chuỗi \\bibitem gốc của từng mục, cùng thứ tự với entries (tùy chọn).
+        fill_missing: True để điền NaN bằng fill_missing_features (khuyên dùng khi đưa vào mô
+            hình); False giữ NaN thô để debug và để các hàm composite_* tự dùng.
 
     Returns:
         Mảng float shape (m, n, len(FEATURE_NAMES)); phần tử [i, j] ứng với cặp
-        (entries[i], candidates[j]).
+        (entries[i], candidates[j]). Không còn NaN nếu fill_missing=True.
 
     Raises:
         ValueError: Khi raw_texts có độ dài khác entries.
@@ -547,4 +614,5 @@ def build_feature_matrix(
         for j, prepared_candidate in enumerate(prepared_candidates):
             tensor[i, j] = _pair_vector(prepared_entry, prepared_candidate, cosine[i, j])
     _fill_context_features(tensor)
-    return tensor
+    # Điền SAU _fill_context_features: composite_score cần NaN gốc để bỏ tín hiệu thiếu.
+    return fill_missing_features(tensor) if fill_missing else tensor
