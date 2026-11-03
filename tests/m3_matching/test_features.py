@@ -1,15 +1,21 @@
 """Kiểm tra tiền xử lý và đặc trưng của P2-06 (chỉ dùng dữ liệu tự dựng, không gọi mạng)."""
 
+import math
+
 import numpy as np
 import pytest
 
 from src.m3_matching.features import (
+    COMPOSITE_WEIGHTS,
     FEATURE_NAMES,
-    author_key,
+    _dense_percentile_rank,
+    _margin_by_row,
     _normalize_arxiv_id,
+    author_key,
     build_feature_matrix,
     build_features,
     char_ngrams,
+    composite_score_matrix,
     extract_arxiv_ids,
     jaccard,
     parse_year,
@@ -36,6 +42,15 @@ def make_candidate(**overrides) -> Reference:
 
 def feature(vector: list[float], name: str) -> float:
     return vector[FEATURE_NAMES.index(name)]
+
+
+def column(tensor: np.ndarray, name: str) -> np.ndarray:
+    """Lấy một feature (m, n) từ tensor (m, n, F)."""
+    return tensor[..., FEATURE_NAMES.index(name)]
+
+
+def is_nan(value: float) -> bool:
+    return math.isnan(value)
 
 
 # ---- preprocess ----
@@ -180,8 +195,18 @@ def test_char_bigram_jaccard_night_nacht():
     assert jaccard(char_ngrams("night", 2), char_ngrams("nacht", 2)) == pytest.approx(1 / 7)
 
 
-def test_jaccard_empty_set_is_zero():
-    assert jaccard(set(), {"a"}) == 0.0
+def test_jaccard_empty_set_is_nan_not_zero():
+    # Tập rỗng nghĩa là thiếu dữ liệu, không phải "không giống nhau".
+    assert is_nan(jaccard(set(), {"a"}))
+    assert is_nan(jaccard({"a"}, set()))
+    assert jaccard({"a"}, {"b"}) == 0.0  # có dữ liệu nhưng không giống: 0.0 thật
+
+
+def test_title_levenshtein_is_nan_when_a_title_is_empty():
+    assert is_nan(title_levenshtein("", "abc"))
+    assert is_nan(title_levenshtein("abc", ""))
+    # rapidfuzz trả 1.0 cho hai chuỗi rỗng; ta không được để giá trị "giống hệt" giả lọt ra.
+    assert is_nan(title_levenshtein("", ""))
 
 
 # ---- build_features ----
@@ -192,9 +217,9 @@ def test_arxiv_id_in_raw_text_does_not_create_fake_year():
     vector = build_features(make_entry(), make_candidate(), raw_text=raw)
 
     assert feature(vector, "has_year") == 0.0
-    assert feature(vector, "year_match") == 0.0
-    assert feature(vector, "year_signed_diff") == 0.0
-    assert feature(vector, "year_diff") == pytest.approx(0.5)  # MISSING_YEAR_DIFF
+    assert is_nan(feature(vector, "year_match"))
+    assert is_nan(feature(vector, "year_signed_diff"))
+    assert is_nan(feature(vector, "year_diff"))
 
 def test_build_features_has_one_value_per_feature_name():
     vector = build_features(make_entry(), make_candidate())
@@ -221,13 +246,25 @@ def test_identical_pair_scores_high_everywhere():
     assert [feature(vector, f) for f in ("has_title", "has_authors", "has_year")] == [1.0] * 3
 
 
-def test_missing_data_gives_neutral_values_and_flags():
+def test_missing_data_gives_nan_values_and_zero_flags():
     vector = build_features(make_entry(), make_candidate())
 
     assert [feature(vector, f) for f in ("has_title", "has_authors", "has_year")] == [0.0] * 3
-    assert feature(vector, "title_lev_sim") == 0.0
-    assert feature(vector, "first_author_match") == 0.0
-    assert feature(vector, "year_diff") == 0.5
+    for name in (
+        "title_lev_sim",
+        "title_word_jaccard",
+        "title_char3_jaccard",
+        "title_token_set",
+        "title_containment",
+        "title_tfidf_cos",
+        "first_author_match",
+        "author_surname_jaccard",
+        "year_match",
+        "year_diff",
+        "year_signed_diff",
+        "arxiv_id_in_fields",
+    ):
+        assert is_nan(feature(vector, name)), name
 
 
 def test_year_diff_is_scaled_and_capped():
@@ -313,9 +350,9 @@ def test_feature_matrix_shape_and_true_candidate_has_highest_tfidf():
 
     tensor = build_feature_matrix(entries, candidates)
 
-    column = FEATURE_NAMES.index("title_tfidf_cos")
+    tfidf = column(tensor, "title_tfidf_cos")
     assert tensor.shape == (2, 3, len(FEATURE_NAMES))
-    assert [int(np.argmax(tensor[i, :, column])) for i in range(2)] == [1, 2]
+    assert [int(np.argmax(tfidf[i])) for i in range(2)] == [1, 2]
 
 
 def test_feature_matrix_matches_single_pair_function():
@@ -327,7 +364,8 @@ def test_feature_matrix_matches_single_pair_function():
         entry, candidate, tfidf_cosine=tensor[0, 0, FEATURE_NAMES.index("title_tfidf_cos")]
     )
 
-    assert tensor[0, 0].tolist() == pytest.approx(single)
+    # nan_ok: nhiều feature là NaN (thiếu tác giả/chuỗi thô); hai bên phải NaN đúng cùng chỗ.
+    assert tensor[0, 0].tolist() == pytest.approx(single, nan_ok=True)
 
 def test_feature_matrix_is_equivariant_to_candidate_order():
     """Đảo thứ tự candidates -> tensor đảo theo cùng hoán vị."""
@@ -359,11 +397,20 @@ def test_feature_matrix_handles_empty_sides(m, n):
     assert build_feature_matrix(entries, candidates).shape == (m, n, len(FEATURE_NAMES))
 
 
-def test_tfidf_returns_zeros_when_no_candidate_has_a_title():
+def test_tfidf_returns_nan_when_no_candidate_has_a_title():
     result = tfidf_cosine_matrix(["attention"], ["", ""])
 
     assert result.shape == (1, 2)
-    assert not result.any()
+    assert np.isnan(result).all()
+
+
+def test_tfidf_is_nan_only_for_cells_with_a_missing_title():
+    result = tfidf_cosine_matrix(["attention is all", ""], ["attention is all", "", "resnet"])
+
+    assert result[0, 0] == pytest.approx(1.0)
+    assert result[0, 2] == 0.0  # có tiêu đề nhưng không chung từ nào: 0.0 thật
+    assert np.isnan(result[0, 1])  # ứng viên thiếu tiêu đề
+    assert np.isnan(result[1]).all()  # mục thiếu tiêu đề
 
 
 # ---- extract_arxiv_ids ----
@@ -424,8 +471,9 @@ def test_feature_matrix_uses_raw_texts_and_checks_their_length():
 
     tensor = build_feature_matrix(entries, candidates, raw_texts=["arXiv:1706.03762", None])
 
-    column = FEATURE_NAMES.index("arxiv_id_in_fields")
-    assert tensor[:, 0, column].tolist() == [1.0, 0.0]
+    values = column(tensor, "arxiv_id_in_fields")[:, 0]
+    assert values[0] == 1.0
+    assert is_nan(values[1])  # mục b không có trường nào để dò ID -> không kết luận được
     with pytest.raises(ValueError):
         build_feature_matrix(entries, candidates, raw_texts=["only one"])
 
@@ -468,8 +516,8 @@ def test_year_signed_diff_keeps_direction_and_is_capped():
     assert feature(far, "year_signed_diff") == -1.0
 
 
-def test_year_signed_diff_is_zero_when_year_is_missing():
-    assert feature(build_features(make_entry(), make_candidate()), "year_signed_diff") == 0.0
+def test_year_signed_diff_is_nan_when_year_is_missing():
+    assert is_nan(feature(build_features(make_entry(), make_candidate()), "year_signed_diff"))
 
 
 def test_title_containment_is_high_for_truncated_title():
@@ -502,3 +550,220 @@ def test_identical_short_titles_still_have_full_trigram_overlap():
 )
 def test_normalize_arxiv_id(raw, expected):
     assert _normalize_arxiv_id(raw) == expected
+
+
+# ---- chính sách NaN: thiếu dữ liệu khác với "không giống" ----
+
+
+def test_disjoint_titles_give_zero_not_nan():
+    vector = build_features(
+        make_entry(title="alpha beta gamma"), make_candidate(ref_title="delta epsilon zeta")
+    )
+
+    assert feature(vector, "has_title") == 1.0
+    assert feature(vector, "title_word_jaccard") == 0.0
+    assert not is_nan(feature(vector, "title_lev_sim"))
+
+
+def test_missing_title_only_makes_title_features_nan():
+    entry = make_entry(authors=["A. Vaswani"], year=2017)
+    candidate = make_candidate(ref_authors=["Ashish Vaswani"], ref_submission_date="2017-06-12")
+
+    vector = build_features(entry, candidate)
+
+    assert feature(vector, "has_title") == 0.0
+    assert is_nan(feature(vector, "title_lev_sim"))
+    assert is_nan(feature(vector, "title_containment"))
+    assert feature(vector, "first_author_match") == 1.0
+    assert feature(vector, "year_match") == 1.0
+
+
+def test_missing_candidate_side_alone_is_enough_for_nan():
+    entry = make_entry(title="Attention Is All You Need", authors=["A. Vaswani"], year=2017)
+
+    vector = build_features(entry, make_candidate())  # ứng viên không có gì
+
+    assert [feature(vector, f) for f in ("has_title", "has_authors", "has_year")] == [0.0] * 3
+    assert is_nan(feature(vector, "title_lev_sim"))
+    assert is_nan(feature(vector, "first_author_match"))
+    assert is_nan(feature(vector, "year_diff"))
+
+
+def test_arxiv_id_feature_is_zero_when_fields_exist_but_lack_the_id_and_nan_otherwise():
+    with_fields = build_features(make_entry(journal="NeurIPS 2017"), make_candidate())
+    no_fields = build_features(make_entry(), make_candidate())
+
+    assert feature(with_fields, "arxiv_id_in_fields") == 0.0
+    assert is_nan(feature(no_fields, "arxiv_id_in_fields"))
+
+
+def test_flags_are_never_nan_even_for_empty_pair():
+    vector = build_features(make_entry(), make_candidate())
+
+    for name in ("has_title", "has_authors", "has_year"):
+        assert feature(vector, name) in (0.0, 1.0), name
+
+
+def test_single_pair_leaves_context_features_nan():
+    entry = make_entry(title="Attention Is All You Need")
+    candidate = make_candidate(ref_title="Attention Is All You Need")
+
+    vector = build_features(entry, candidate)
+
+    for name in ("composite_rank_in_pool", "composite_margin", "composite_col_rank_in_paper"):
+        assert is_nan(feature(vector, name)), name
+
+
+def test_empty_feature_matrix_has_full_shape():
+    assert build_feature_matrix([], [make_candidate()]).shape == (0, 1, len(FEATURE_NAMES))
+
+
+# ---- composite_score ----
+
+
+def test_composite_weights_sum_to_one_and_use_existing_features():
+    assert sum(COMPOSITE_WEIGHTS.values()) == pytest.approx(1.0)
+    assert set(COMPOSITE_WEIGHTS) <= set(FEATURE_NAMES)
+
+
+def test_composite_ignores_missing_signals_instead_of_penalising_them():
+    # Cùng tiêu đề, nhưng cả hai bên không có tác giả/năm: điểm vẫn phải ~1.0, không bị
+    # kéo xuống 0.75 chỉ vì thiếu tín hiệu phụ.
+    entry = make_entry(title="Attention Is All You Need")
+    candidate = make_candidate(ref_title="Attention Is All You Need")
+
+    score = composite_score_matrix(build_feature_matrix([entry], [candidate]))
+
+    assert score[0, 0] == pytest.approx(1.0)
+
+
+def test_composite_is_nan_without_title():
+    entry = make_entry(authors=["A. Vaswani"], year=2017)
+    candidate = make_candidate(ref_authors=["Ashish Vaswani"], ref_submission_date="2017-06-12")
+
+    assert np.isnan(composite_score_matrix(build_feature_matrix([entry], [candidate]))).all()
+
+
+# ---- hạng dense chuẩn hóa ----
+
+
+def test_dense_percentile_rank_best_is_zero_and_ties_share_rank():
+    ranks = _dense_percentile_rank(np.array([0.9, 0.5, 0.5, 0.1]))
+
+    np.testing.assert_allclose(ranks, [0.0, 1 / 3, 1 / 3, 2 / 3])
+
+
+def test_dense_percentile_rank_uses_only_valid_scores_as_denominator():
+    ranks = _dense_percentile_rank(np.array([0.9, np.nan, 0.1]))
+
+    np.testing.assert_allclose(ranks, [0.0, np.nan, 1.0])
+
+
+@pytest.mark.parametrize("scores", [[0.7], [0.7, np.nan], [np.nan, np.nan], []])
+def test_dense_percentile_rank_is_nan_without_competitors(scores):
+    assert np.isnan(_dense_percentile_rank(np.array(scores, dtype=float))).all()
+
+
+def test_dense_percentile_rank_treats_float_noise_as_tie():
+    ranks = _dense_percentile_rank(np.array([0.3, 0.1 + 0.2, 0.1]))
+
+    assert ranks[0] == ranks[1] == 0.0
+
+
+# ---- margin theo hàng ----
+
+
+def test_margin_is_positive_for_winner_and_negative_for_others():
+    margin = _margin_by_row(np.array([[0.9, 0.5, 0.2]]))
+
+    np.testing.assert_allclose(margin, [[0.4, -0.4, -0.7]])
+
+
+def test_margin_is_zero_for_tied_winners():
+    margin = _margin_by_row(np.array([[0.8, 0.8, 0.1]]))
+
+    np.testing.assert_allclose(margin, [[0.0, 0.0, -0.7]])
+
+
+def test_margin_is_nan_for_nan_cells_and_rows_without_competitors():
+    margin = _margin_by_row(np.array([[0.9, np.nan, 0.5], [0.4, np.nan, np.nan]]))
+
+    np.testing.assert_allclose(margin, [[0.4, np.nan, -0.4], [np.nan] * 3])
+
+
+# ---- ba feature ngữ cảnh trên một bài hoàn chỉnh ----
+
+
+def make_small_paper():
+    entries = [
+        make_entry(citation_key="a", title="Attention Is All You Need"),
+        make_entry(citation_key="b", title="Deep Residual Learning for Image Recognition"),
+    ]
+    candidates = [
+        make_candidate(ref_arxiv_id="1810.04805", ref_title="BERT Pre-training Transformers"),
+        make_candidate(ref_arxiv_id="1706.03762", ref_title="Attention is all you need"),
+        make_candidate(
+            ref_arxiv_id="1512.03385", ref_title="Deep Residual Learning for Image Recognition"
+        ),
+    ]
+    return entries, candidates
+
+
+def test_context_features_put_true_candidate_first_in_row_and_column():
+    entries, candidates = make_small_paper()
+
+    tensor = build_feature_matrix(entries, candidates)
+
+    row_rank = column(tensor, "composite_rank_in_pool")
+    margin = column(tensor, "composite_margin")
+    col_rank = column(tensor, "composite_col_rank_in_paper")
+    assert [row_rank[0, 1], row_rank[1, 2]] == [0.0, 0.0]  # đúng cặp: hạng 0 theo hàng
+    assert margin[0, 1] > 0 > margin[0, 0]
+    assert margin[1, 2] > 0 > margin[1, 0]
+    assert [col_rank[0, 1], col_rank[1, 2]] == [0.0, 0.0]  # và cũng hạng 0 theo cột
+    assert col_rank[1, 1] == 1.0  # entry b là entry khớp tệ hơn cho ref "Attention"
+
+
+def test_context_features_are_nan_for_a_paper_with_one_entry_or_one_candidate():
+    entries, candidates = make_small_paper()
+
+    one_entry = build_feature_matrix(entries[:1], candidates)
+    one_candidate = build_feature_matrix(entries, candidates[:1])
+
+    assert np.isnan(column(one_entry, "composite_col_rank_in_paper")).all()
+    assert not np.isnan(column(one_entry, "composite_rank_in_pool")).any()
+    assert np.isnan(column(one_candidate, "composite_rank_in_pool")).all()
+    assert np.isnan(column(one_candidate, "composite_margin")).all()
+
+
+def test_context_features_are_nan_for_entry_without_title_but_not_for_others():
+    entries, candidates = make_small_paper()
+    entries.append(make_entry(citation_key="c"))  # không có tiêu đề
+
+    tensor = build_feature_matrix(entries, candidates)
+
+    for name in ("composite_rank_in_pool", "composite_margin", "composite_col_rank_in_paper"):
+        assert np.isnan(column(tensor, name)[2]).all(), name
+        assert not np.isnan(column(tensor, name)[:2]).any(), name
+
+
+def test_context_rank_ignores_candidates_without_title():
+    entries, candidates = make_small_paper()
+    candidates[0] = make_candidate(ref_arxiv_id="1810.04805")  # ứng viên thiếu tiêu đề
+
+    tensor = build_feature_matrix(entries[:1], candidates)
+
+    row_rank = column(tensor, "composite_rank_in_pool")[0]
+    assert np.isnan(row_rank[0])
+    assert row_rank[1] == 0.0 and row_rank[2] == 1.0  # chỉ còn 2 ứng viên hợp lệ để xếp hạng
+
+
+def test_identical_candidate_titles_get_identical_context_features():
+    entries, candidates = make_small_paper()
+    candidates.append(make_candidate(ref_arxiv_id="1706.03763", ref_title="Attention is all you need"))
+
+    tensor = build_feature_matrix(entries[:1], candidates)
+
+    row_rank = column(tensor, "composite_rank_in_pool")[0]
+    assert row_rank[1] == row_rank[3] == 0.0
+    assert column(tensor, "composite_margin")[0, 1] == 0.0  # hòa nhất: không "áp đảo"
