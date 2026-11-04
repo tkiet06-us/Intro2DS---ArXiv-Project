@@ -121,11 +121,26 @@ NAN = float("nan")
 # Năm arXiv (preprint) thường sớm hơn năm xuất bản vài năm; chênh quá 5 năm coi như "rất xa".
 YEAR_DIFF_CAP = 5
 
+# Archive prefix hợp lệ của arXiv ID style cũ (trước 2007), theo
+# https://arxiv.org/help/arxiv_identifier và danh sách archive chính thức của arXiv.
+# Không có whitelist thì nhánh [a-z\-]+/\d{7} quá permissive: "foo/1234567" (URL lạ, page
+# number...) cũng bị nhận là ID. Sắp xếp để archive dài (math-ph, nucl-ex) đứng trước
+# archive ngắn (math, nlin) tránh backtrack không cần thiết.
+_OLD_ARCHIVES = (
+    "astro-ph|cond-mat|gr-qc|hep-ex|hep-lat|hep-ph|hep-th|math-ph|nlin|nucl-ex|nucl-th|physics|"
+    "quant-ph|math|cs|q-bio|q-fin|stat|eess|econ|solv-int|chao-dyn|adap-org|alg-geom|comp-gas|"
+    "dg-ga|funct-an|patt-sol|supr-con|acc-phys|ao-sci|atom-ph|bayes-an|chem-ph|cmp-lg|mtrl-th|"
+    "plasm-ph|q-alg"
+)
 # Khớp arXiv ID dạng mới "2310.12345" và dạng cũ "hep-th/9901001", "math.GT/0309136", kèm
 # hậu tố version tùy chọn. Không cho chữ số dính ngay trước/sau để "2310.1234" không bị cắt ra
-# từ "2310.12345". Ví dụ: "arXiv:2310.12345v2" -> "2310.12345v2".
+# từ "2310.12345". Lookbehind (?<![a-z\-]) trước _OLD_ARCHIVES ngăn match inside longer word:
+# "xhep-th/9901001" không bị nhận nhầm thành "hep-th/9901001". Ví dụ:
+# "arXiv:2310.12345v2" -> "2310.12345v2"; "see hep-th/9901001" -> "hep-th/9901001".
 ARXIV_ID_PATTERN = re.compile(
-    r"(?<!\d)(?:\d{4}\.\d{4,5}|[a-z\-]+(?:\.[a-z]{2})?/\d{7})(?:v\d+)?(?!\d)", re.IGNORECASE
+    rf"(?<!\d)(?:\d{{4}}\.\d{{4,5}}|(?<![a-z\-])(?:{_OLD_ARCHIVES})(?:\.[a-z]{{2}})?/\d{{7}})"
+    r"(?:v\d+)?(?!\d)",
+    re.IGNORECASE,
 )
 VERSION_SUFFIX_PATTERN = re.compile(r"v\d+$")
 

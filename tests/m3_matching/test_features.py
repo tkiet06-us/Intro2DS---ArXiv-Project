@@ -450,12 +450,47 @@ def test_extract_arxiv_ids_ignores_doi_and_longer_numbers():
     assert extract_arxiv_ids("doi 10.1145/3292500.3330701") == set()
     assert extract_arxiv_ids("2310.123456") == set()
 
+def test_extract_arxiv_ids_rejects_unknown_archive_prefix():
+    assert extract_arxiv_ids("see foo/1234567") == set()
+    assert extract_arxiv_ids("hep-th/9901001 and math.GT/0309136") == {
+        "hep-th/9901001", "math.gt/0309136"
+    }
 
 def test_extract_arxiv_ids_handles_empty_input():
     assert extract_arxiv_ids(None) == set()
     assert extract_arxiv_ids("") == set()
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Lookbehind (?<![a-z\-]) ngăn match inside word
+        ("xhep-th/9901001", set()),                       # preceded by letter
+        ("myhep-th/9901001", set()),                      # preceded by letter
+        ("x-hep-th/9901001", set()),                      # preceded by hyphen
+        # Nhưng match khi phân tách hợp lệ
+        ("see hep-th/9901001", {"hep-th/9901001"}),       # preceded by space
+        ("(hep-th/9901001)", {"hep-th/9901001"}),         # preceded by (
+        ("arXiv:hep-th/9901001", {"hep-th/9901001"}),     # preceded by :
+        ("[hep-th/9901001]", {"hep-th/9901001"}),         # preceded by [
+    ],
+)
+def test_extract_arxiv_ids_lookbehind_blocks_mid_word_match(text, expected):
+    assert extract_arxiv_ids(text) == expected
 
+@pytest.mark.parametrize(
+    "archive",
+    ["astro-ph", "cond-mat", "gr-qc", "hep-ex", "hep-lat", "hep-ph", "hep-th",
+     "math-ph", "nlin", "nucl-ex", "nucl-th", "physics", "quant-ph",
+     "math", "cs", "q-bio", "q-fin", "stat", "eess", "econ",
+     "solv-int", "chao-dyn", "adap-org", "alg-geom", "comp-gas",
+     "dg-ga", "funct-an", "patt-sol", "supr-con",
+     "acc-phys", "ao-sci", "atom-ph", "bayes-an", "chem-ph", "cmp-lg", "mtrl-th",
+     "plasm-ph", "q-alg"],
+)
+def test_extract_arxiv_ids_accepts_every_whitelisted_archive(archive):
+    # Mọi archive trong whitelist phải được nhận (kể cả case subcategory .XX).
+    assert extract_arxiv_ids(f"{archive}/9901001") == {f"{archive}/9901001"}
+    
 # ---- raw_text ----
 
 
