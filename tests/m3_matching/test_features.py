@@ -7,6 +7,8 @@ import pytest
 
 from src.m3_matching.features import (
     COMPOSITE_WEIGHTS,
+     _COMPOSITE_COLUMNS,
+    columns_to_mask,
     FEATURE_NAMES,
     MISSING_FILL_VALUES,
     _dense_percentile_rank,
@@ -893,3 +895,36 @@ def test_fill_missing_features_rejects_wrong_column_count():
 
 def test_fill_missing_handles_empty_paper():
     assert build_feature_matrix([], [make_candidate()], fill_missing=True).shape[0] == 0
+
+def test_columns_to_mask_adds_composite_when_rule_uses_a_composite_signal():
+    cols = columns_to_mask(["title_lev_sim"])
+    assert {"composite_rank_in_pool", "composite_margin", "composite_col_rank_in_paper"} <= set(cols)
+
+
+def test_columns_to_mask_does_not_add_composite_for_independent_signal():
+    # arxiv_id_in_fields không nằm trong COMPOSITE_WEIGHTS -> không cần che composite.
+    assert columns_to_mask(["arxiv_id_in_fields"]) == ["arxiv_id_in_fields"]
+
+@pytest.mark.parametrize("name", list(COMPOSITE_WEIGHTS))
+def test_columns_to_mask_handles_every_composite_signal(name):
+    # Mọi tín hiệu gốc của composite đều phải kéo theo cả ba cột composite_*.
+    cols = set(columns_to_mask([name]))
+    assert set(_COMPOSITE_COLUMNS) <= cols
+
+
+def test_columns_to_mask_empty_input_returns_empty():
+    assert columns_to_mask([]) == []
+
+
+def test_columns_to_mask_dedupes_repeated_input():
+    assert columns_to_mask(["title_lev_sim", "title_lev_sim"]) == columns_to_mask(["title_lev_sim"])
+
+
+def test_columns_to_mask_rejects_unknown_feature():
+    with pytest.raises(KeyError, match="feature không tồn tại"):
+        columns_to_mask(["typo_feature_xyz"])
+
+
+def test_columns_to_mask_year_diff_does_not_trigger_composite():
+    # year_diff KHÔNG nằm trong COMPOSITE_WEIGHTS (chỉ year_match nằm) -> không che composite.
+    assert columns_to_mask(["year_diff"]) == ["year_diff"]

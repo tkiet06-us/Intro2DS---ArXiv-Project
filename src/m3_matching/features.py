@@ -466,6 +466,36 @@ def tfidf_cosine_matrix(entry_titles: list[str], candidate_titles: list[str]) ->
     result[:, [not title for title in candidate_titles]] = NAN
     return result
 
+# Ba cột composite_* được tính từ COMPOSITE_WEIGHTS. Khi che feature trùng luật
+# (ml_design.md mục 3.5), che một tín hiệu gốc của composite là chưa đủ — phải che cả
+# ba cột composite_* nếu không model vẫn đọc lại luật qua hạng/margin.
+_COMPOSITE_COLUMNS: tuple[str, ...] = (
+    "composite_rank_in_pool",
+    "composite_margin",
+    "composite_col_rank_in_paper",
+)
+
+
+def columns_to_mask(rule_features: list[str]) -> list[str]:
+    """Cột cần che khi huấn luyện, nếu luật gán nhãn tự động dùng ``rule_features``.
+
+    Args:
+        rule_features: Tên các feature mà luật auto dùng (ví dụ ["title_lev_sim"]).
+
+    Returns:
+        Danh sách feature cần che, đã gồm các cột composite_* liên quan. Không trùng phần tử.
+
+    Raises:
+        KeyError: Khi một tên không có trong FEATURE_NAMES (thường do gõ sai).
+    """
+    unknown = [name for name in rule_features if name not in FEATURE_NAMES]
+    if unknown:
+        raise KeyError(f"feature không tồn tại: {unknown}")
+    # dict.fromkeys để giữ thứ tự và khử trùng nếu caller truyền trùng.
+    cols = list(dict.fromkeys(rule_features))
+    if any(name in COMPOSITE_WEIGHTS for name in rule_features):
+        cols += [name for name in _COMPOSITE_COLUMNS if name not in cols]
+    return cols
 
 def composite_score_matrix(tensor: np.ndarray) -> np.ndarray:
     """Điểm tương đồng tổng hợp S[i, j] cho từng cặp, làm gốc cho ba feature ngữ cảnh.
