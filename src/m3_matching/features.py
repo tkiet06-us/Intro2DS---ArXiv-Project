@@ -63,7 +63,17 @@ FEATURE_NAMES: tuple[str, ...] = (
 
 # Trọng số của composite_score (tổng = 1). Chỉ gồm các tín hiệu ĐÃ có trong FEATURE_NAMES.
 # Thiếu tín hiệu nào (NaN) thì bỏ nó và chia lại cho tổng trọng số còn lại (xem
-# composite_score_matrix). Trọng số là siêu tham số: chọn trên Train/Valid, không dùng Test.
+# composite_score_matrix).
+#
+# Nguồn gốc: giá trị ban đầu chọn theo heuristic (title là tín hiệu mạnh nhất sau ID,
+# author trung bình, year yếu). CHƯA tune bằng ablation — sẽ kiểm chứng trên Train/Valid
+# ở P4-01/P4-04 với 4 cấu hình:
+#   A. Có composite_*, trọng số hiện tại (0.35/0.25/0.15/0.10/0.10/0.05)
+#   B. Có composite_*, trọng số đều (1/6 mỗi tín hiệu)
+#   C. KHÔNG có composite_* (bỏ 3 cột, model chỉ học từ F01–F15)
+#   D. Có composite_*, trọng số hiện tại nhưng trên bài manual only (đối chứng)
+# Chọn cấu hình cuối bằng MRR@5 trên Valid (manual, ưu tiên) trước khi báo cáo Test.
+# KHÔNG chọn bằng Test.
 COMPOSITE_WEIGHTS: dict[str, float] = {
     "title_lev_sim": 0.35,
     "title_tfidf_cos": 0.25,
