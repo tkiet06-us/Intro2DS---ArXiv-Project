@@ -1,14 +1,22 @@
-"""Hàm tiện ích I/O dùng chung: đọc/ghi JSON an toàn, và cửa vào của hàm đổi dạng ID."""
+"""Hàm tiện ích I/O dùng chung: đọc/ghi JSON an toàn, nhật ký .jsonl, cửa vào hàm đổi dạng ID."""
 
 import json
 import os
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from src.common.ids import from_folder_name, to_folder_name
 
-__all__ = ["from_folder_name", "read_json", "to_folder_name", "write_json"]
+__all__ = [
+    "append_jsonl",
+    "from_folder_name",
+    "iter_jsonl",
+    "read_json",
+    "to_folder_name",
+    "write_json",
+]
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -58,3 +66,48 @@ def read_json(path: Path) -> Any:
     """
     with path.open(encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def append_jsonl(path: Path | str, record: dict) -> None:
+    """Ghi nối MỘT bản ghi JSON vào cuối file ``.jsonl`` và ép xuống đĩa.
+
+    Gọi sau mỗi đơn vị công việc để checkpoint: nếu chương trình bị ngắt thì tối đa mất
+    bản ghi đang ghi dở, các bản ghi trước đó vẫn an toàn.
+
+    Args:
+        path: File ``.jsonl`` (tự tạo thư mục cha nếu chưa có).
+        record: Dict JSON-hóa được; ghi thành đúng một dòng.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def iter_jsonl(path: Path | str) -> Iterator[dict]:
+    """Đọc từng bản ghi của file ``.jsonl``, bỏ qua dòng trống và dòng hỏng.
+
+    Dòng hỏng thường là dòng cuối bị cắt ngang khi chương trình bị ngắt giữa chừng.
+
+    Args:
+        path: File ``.jsonl``. Không tồn tại thì không sinh bản ghi nào.
+
+    Yields:
+        Từng bản ghi dạng dict.
+    """
+    path = Path(path)
+    if not path.exists():
+        return
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                yield record
