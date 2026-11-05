@@ -32,6 +32,7 @@ import tempfile
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
+from sklearn.base import clone
 from pathlib import Path
 from typing import Any, NamedTuple, Sequence
 
@@ -403,23 +404,23 @@ def indices_to_ids(order: ArrayLike, ids: ArrayLike) -> NDArray[np.object_]:
     hoặc ``(n_queries, n_candidates)``. Dùng hàm này thay vì tự tra ``ids[order]`` vì
     ``-1`` là chỉ số hợp lệ của Python và sẽ âm thầm trả ứng viên cuối.
     """
-    O = np.asarray(order)
-    one = O.ndim == 1
-    O = O[None, :] if one else O
-    if O.ndim != 2:
+    order_arr = np.asarray(order)
+    one = order_arr.ndim == 1
+    order_arr = order_arr[None, :] if one else order_arr
+    if order_arr.ndim != 2:
         raise ValueError("order phải là mảng 1-D hoặc 2-D")
-    I = np.asarray(ids, dtype=object)
-    if I.ndim == 1:
-        I = np.broadcast_to(I, (O.shape[0], I.size))
-    if I.ndim != 2 or I.shape[0] != O.shape[0]:
+    ids_arr = np.asarray(ids, dtype=object)
+    if ids_arr.ndim == 1:
+        ids_arr = np.broadcast_to(ids_arr, (order_arr.shape[0], ids_arr.size))
+    if ids_arr.ndim != 2 or ids_arr.shape[0] != order_arr.shape[0]:
         raise ValueError("ids phải là (n_candidates,) hoặc (n_queries, n_candidates)")
-    valid = O >= 0
-    if (O >= I.shape[1]).any():
+    valid = order_arr >= 0
+    if (order_arr >= ids_arr.shape[1]).any():
         raise IndexError("order vượt quá số ứng viên")
-    if I.shape[1] == 0:
-        out = np.full(O.shape, None, dtype=object)
+    if ids_arr.shape[1] == 0:
+        out = np.full(order_arr.shape, None, dtype=object)
     else:
-        out = np.take_along_axis(I, np.where(valid, O, 0), axis=1).astype(object)
+        out = np.take_along_axis(ids_arr, np.where(valid, order_arr, 0), axis=1).astype(object)
         out[~valid] = None
     return out[0] if one else out
 
@@ -877,10 +878,8 @@ class PointwiseClassifierModel(MatchingModel):
         if np.unique(yb).size < 2:
             raise ValueError("cần cả ô dương và ô âm trong dữ liệu huấn luyện")
         try:
-            from sklearn.base import clone
-
             est = clone(self.estimator)
-        except ImportError:
+        except TypeError:
             est = copy.deepcopy(self.estimator)
         self.imputer_ = _NanMedianImputer().fit(X) if self.impute else None
         Xt = X if self.imputer_ is None else self.imputer_.transform(X)
