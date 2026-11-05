@@ -87,18 +87,23 @@ COMPOSITE_WEIGHTS: dict[str, float] = {
 # vốn đã được cờ has_title/has_authors/has_year báo cho mô hình. Hằng số cố định (không fit từ
 # dữ liệu) nên dùng được nguyên xi cho Train, Valid, Test.
 MISSING_FILL_VALUES: dict[str, float] = {
-    # Không có trường nào để dò ID, hoặc ứng viên không có ID: không có bằng chứng -> 0.
-    "arxiv_id_in_fields": 0.5,
-    # Độ giống tiêu đề/tác giả: thiếu dữ liệu thì không có bằng chứng giống -> 0.
-    "title_lev_sim": 0.5,
-    "title_word_jaccard": 0.5,
-    "title_char3_jaccard": 0.5,
-    "title_token_set": 0.5,
-    "title_containment": 0.5,
-    "title_tfidf_cos": 0.5,
-    "first_author_match": 0.5,
-    "author_surname_jaccard": 0.5,
-    "year_match": 0.5,
+    # Mục không chứa ID arXiv nào: không có bằng chứng -> 0.0. Lưu ý: sau khi điền, "không biết"
+    # (NaN) và "xung đột" (0.0 thật) cùng là 0.0. Muốn giữ phân biệt này thì dùng tensor thô
+    # (fill_missing=False) với mô hình xử lý được NaN; thí nghiệm mô phỏng cho thấy MRR không đổi.
+    "arxiv_id_in_fields": 0.0,
+    # Độ giống tiêu đề/tác giả/năm là điểm "càng cao càng giống": thiếu dữ liệu thì không có
+    # bằng chứng giống -> 0.0, thấp hơn mọi điểm thật. Cố ý KHÔNG dùng 0.5: các cặp sai có
+    # title_lev_sim trung bình ~0.2 (p99 ~0.46), nên 0.5 đẩy ứng viên thiếu tiêu đề lên trên
+    # ứng viên sai có tiêu đề và phá quy ước của Naive baseline "thiếu dữ liệu xếp sau cùng".
+    "title_lev_sim": 0.0,
+    "title_word_jaccard": 0.0,
+    "title_char3_jaccard": 0.0,
+    "title_token_set": 0.0,
+    "title_containment": 0.0,
+    "title_tfidf_cos": 0.0,
+    "first_author_match": 0.0,
+    "author_surname_jaccard": 0.0,
+    "year_match": 0.0,
     # year_diff là KHOẢNG CÁCH (0 = trùng năm, tốt nhất) nên không thể điền 0: điền giữa dải.
     "year_diff": 0.5,
     # Cờ có/không: không bao giờ NaN, điền 0 chỉ để bảng đầy đủ cột.
@@ -323,7 +328,6 @@ class _Prepared:
     year: int | None
     arxiv_ids: frozenset[str] = frozenset()  # chỉ phía BibTeX: mọi ID tìm thấy trong các trường
     arxiv_id: str = ""  # chỉ phía ứng viên
-    has_text: bool = False  # chỉ phía BibTeX: có ít nhất một trường (url/journal/doi/raw) để dò ID
 
 
 def _prepare_entry(entry: Bibtex, raw_text: str | None = None) -> _Prepared:
@@ -338,7 +342,6 @@ def _prepare_entry(entry: Bibtex, raw_text: str | None = None) -> _Prepared:
         authors=tuple(author_keys(entry.authors)),
         year=entry.year if entry.year is not None else parse_year(raw_text),
         arxiv_ids=frozenset(extract_arxiv_ids(" ".join(f for f in text_fields if f))),
-        has_text=any(text_fields),
     )
 
 
@@ -375,11 +378,15 @@ def _prepare_candidate(candidate: Reference) -> _Prepared:
 
 
 def _arxiv_id_in_fields(entry: _Prepared, candidate: _Prepared) -> float:
-    """1.0/0.0 nếu ID của ứng viên có/không nằm trong ID tìm thấy ở url/journal/doi/chuỗi thô.
+    """Ba trạng thái: 1.0 trùng ID, 0.0 xung đột, NaN không có ID nào để so.
 
-    NaN khi mục BibTeX không có trường nào để dò (không thể kết luận "không có ID").
+    - 1.0: ID của ứng viên nằm trong các ID tìm thấy ở url/journal/doi/chuỗi thô của mục.
+    - 0.0: mục có ID arXiv nhưng toàn ID khác. Đây là bằng chứng thật (mục đang trích bài khác),
+      khác với "không biết".
+    - NaN: mục không chứa ID arXiv nào, kể cả khi có journal/url không phải arXiv (ví dụ journal
+      "NeurIPS 2017"). Thiếu dữ liệu cần để so sánh nên theo quy ước chung là NaN, không phải 0.
     """
-    if not entry.has_text or not candidate.arxiv_id:
+    if not entry.arxiv_ids or not candidate.arxiv_id:
         return NAN
     return float(candidate.arxiv_id in entry.arxiv_ids)
 
@@ -428,7 +435,7 @@ def _pair_vector(entry: _Prepared, candidate: _Prepared, tfidf_cosine: float) ->
         float(has_title),
         float(has_authors),
         has_year,
-        NAN,  # composite_rank_in_pool
+        NAN,  # composite_rank_in_pool: chỉ tính được khi có cả ma trận
         NAN,  # composite_margin
         NAN,  # composite_col_rank_in_paper
     ]

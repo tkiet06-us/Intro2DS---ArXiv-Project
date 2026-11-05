@@ -265,22 +265,6 @@ def test_missing_data_gives_nan_before_fill():
         assert is_nan(feature(vector, name)), name
 
 
-def test_missing_data_filled_with_neutral_midpoint():
-    # Tầng 2: fill_missing_features điền NaN bằng neutral midpoint 0.5.
-    vector = fill_missing_features(np.array(build_features(make_entry(), make_candidate())))
-
-    for name in (
-        "title_lev_sim", "title_word_jaccard", "title_char3_jaccard",
-        "title_token_set", "title_containment", "title_tfidf_cos",
-        "first_author_match", "author_surname_jaccard",
-        "year_match", "year_diff",
-        "arxiv_id_in_fields",
-    ):
-        assert feature(vector.tolist(), name) == 0.5, name
-    # Meta flags không bị ảnh hưởng bởi fill
-    for name in ("has_title", "has_authors", "has_year"):
-        assert feature(vector.tolist(), name) == 0.0, name
-
 def test_year_diff_is_scaled_and_capped():
     candidate = make_candidate(ref_submission_date="2017-06-12")
 
@@ -628,12 +612,54 @@ def test_missing_candidate_side_alone_is_enough_for_nan():
     assert is_nan(feature(vector, "year_diff"))
 
 
-def test_arxiv_id_feature_is_zero_when_fields_exist_but_lack_the_id_and_nan_otherwise():
-    with_fields = build_features(make_entry(journal="NeurIPS 2017"), make_candidate())
-    no_fields = build_features(make_entry(), make_candidate())
+def arxiv_id_state(entry_kwargs: dict, raw_text: str | None = None, fill: bool = False) -> float:
+    """Giá trị arxiv_id_in_fields cho ứng viên 1706.03762, thô hoặc sau khi điền."""
+    vector = build_features(make_entry(**entry_kwargs), make_candidate(), raw_text=raw_text)
+    if fill:
+        vector = fill_missing_features(vector).tolist()
+    return feature(vector, "arxiv_id_in_fields")
 
-    assert feature(with_fields, "arxiv_id_in_fields") == 0.0
-    assert is_nan(feature(no_fields, "arxiv_id_in_fields"))
+
+def test_arxiv_id_feature_has_three_raw_states():
+    # D: trùng ID -> 1.0; C: có ID arXiv nhưng của bài khác -> 0.0 (xung đột, bằng chứng thật);
+    # A, B: không có ID arXiv nào -> NaN (không biết), kể cả khi có journal không phải arXiv.
+    assert arxiv_id_state({"journal": "arXiv:1706.03762"}) == 1.0
+    assert arxiv_id_state({"journal": "arXiv:1810.04805"}) == 0.0
+    assert is_nan(arxiv_id_state({}))
+    assert is_nan(arxiv_id_state({"journal": "NeurIPS 2017"}))
+
+
+def test_arxiv_id_feature_is_one_if_the_id_is_among_several():
+    entry = {"journal": "arXiv:1810.04805", "url": "https://arxiv.org/abs/1706.03762v5"}
+
+    assert arxiv_id_state(entry) == 1.0
+
+
+def test_arxiv_id_feature_uses_raw_text_when_fields_have_no_id():
+    assert arxiv_id_state({"journal": "NeurIPS"}, raw_text="arXiv:1706.03762") == 1.0
+    assert arxiv_id_state({"journal": "NeurIPS"}, raw_text="arXiv:1810.04805") == 0.0
+
+
+def test_arxiv_id_feature_after_fill_keeps_match_and_treats_the_rest_as_no_evidence():
+    # Sau khi điền, "không biết" và "xung đột" cùng là 0.0 (có chủ ý, xem MISSING_FILL_VALUES);
+    # sự khác biệt chỉ còn trong tensor thô.
+    assert arxiv_id_state({"journal": "arXiv:1706.03762"}, fill=True) == 1.0
+    assert arxiv_id_state({"journal": "arXiv:1810.04805"}, fill=True) == 0.0
+    assert arxiv_id_state({}, fill=True) == 0.0
+    assert arxiv_id_state({"journal": "NeurIPS 2017"}, fill=True) == 0.0
+
+
+def test_arxiv_id_feature_is_constant_across_a_row_when_the_entry_has_no_id():
+    # Entry không có ID: cả hàng NaN, nên feature này không làm đổi thứ hạng trong hàng.
+    entries = [make_entry(journal="NeurIPS 2017")]
+    candidates = [
+        make_candidate(ref_arxiv_id="1706.03762"),
+        make_candidate(ref_arxiv_id="1810.04805"),
+    ]
+
+    tensor = build_feature_matrix(entries, candidates)
+
+    assert np.isnan(column(tensor, "arxiv_id_in_fields")).all()
 
 
 def test_flags_are_never_nan_even_for_empty_pair():
@@ -719,6 +745,21 @@ def test_dense_percentile_rank_treats_float_noise_as_tie():
     ranks = _dense_percentile_rank(np.array([0.3, 0.1 + 0.2, 0.1]))
 
     assert ranks[0] == ranks[1] == 0.0
+
+def test_dense_percentile_rank_valid_cell_is_better_than_nan_even_if_score_is_low():
+    ranks = _dense_percentile_rank(np.array([0.9, 0.1, np.nan, np.nan, np.nan]))
+
+    np.testing.assert_allclose(ranks, [0.0, 0.25, 1.0, 1.0, 1.0])
+    assert ranks[1] < ranks[2]  # có dữ liệu (dù kém) luôn tốt hơn thiếu dữ liệu
+
+
+def test_dense_percentile_rank_single_cell_is_zero_if_valid_and_one_if_missing():
+    assert _dense_percentile_rank(np.array([0.7])).tolist() == [0.0]
+    assert _dense_percentile_rank(np.array([np.nan])).tolist() == [1.0]
+
+
+def test_dense_percentile_rank_all_ties_share_best_rank():
+    np.testing.assert_allclose(_dense_percentile_rank(np.array([0.2, 0.2, 0.2])), [0.0] * 3)
 
 
 # ---- margin theo hàng ----
@@ -825,111 +866,146 @@ def test_identical_candidate_titles_get_identical_context_features():
     assert column(tensor, "composite_margin")[0, 1] == 0.0  # hòa nhất: không "áp đảo"
 
 
-# ---- điền giá trị thiếu theo ý nghĩa (fill_missing_features) ----
+# ---- fill_missing_features (tầng 2: điền NaN theo ý nghĩa từng feature) ----
 
 
-def make_paper_with_gaps():
-    """Bài có đủ các kiểu thiếu: entry thiếu năm/tác giả, ứng viên thiếu tiêu đề."""
-    entries = [
-        make_entry(citation_key="full", title="Attention Is All You Need", year=2017,
-                   authors=["Ashish Vaswani"]),
-        make_entry(citation_key="bare", title="Deep Residual Learning"),
-        make_entry(citation_key="notitle", year=2016),
-    ]
-    candidates = [
-        make_candidate(ref_arxiv_id="1706.03762", ref_title="Attention Is All You Need",
-                       ref_authors=["Ashish Vaswani"], ref_submission_date="2017-06-12"),
-        make_candidate(
-            ref_arxiv_id="1512.03385", ref_title="Deep Residual Learning for Image Recognition"
-        ),
-        make_candidate(ref_arxiv_id="1810.04805"),  # thiếu hết metadata
-    ]
-    return entries, candidates
-
-
-def test_every_feature_has_a_fill_value():
+def test_every_feature_has_a_fill_value_and_nothing_extra():
+    # Thay cho assert ở đầu module (assert bị bỏ qua khi chạy python -O).
     assert set(MISSING_FILL_VALUES) == set(FEATURE_NAMES)
 
 
-def test_fill_missing_removes_all_nan():
-    entries, candidates = make_paper_with_gaps()
+def test_fill_removes_every_nan_and_keeps_existing_values():
+    raw = np.full((2, 3, len(FEATURE_NAMES)), np.nan)
+    raw[0, 0, 1] = 0.37
 
-    raw = build_feature_matrix(entries, candidates)
-    filled = build_feature_matrix(entries, candidates, fill_missing=True)
+    filled = fill_missing_features(raw)
 
-    assert np.isnan(raw).any()  # mặc định vẫn giữ NaN thô
     assert not np.isnan(filled).any()
+    assert filled[0, 0, 1] == 0.37
+    for index, name in enumerate(FEATURE_NAMES):
+        if (0, index) != (0, 1):
+            assert filled[1, 2, index] == MISSING_FILL_VALUES[name], name
 
 
-def test_fill_missing_only_changes_nan_cells():
-    entries, candidates = make_paper_with_gaps()
-
-    raw = build_feature_matrix(entries, candidates)
-    filled = build_feature_matrix(entries, candidates, fill_missing=True)
-
-    known = ~np.isnan(raw)
-    np.testing.assert_array_equal(filled[known], raw[known])
-
-
-def test_fill_uses_per_feature_meaning_not_zero_everywhere():
-    entries, candidates = make_paper_with_gaps()
-
-    filled = build_feature_matrix(entries, candidates, fill_missing=True)
-    pair = filled[1, 1]  # entry "bare" không năm/tác giả vs ứng viên không năm/tác giả
-
-    # year_diff là khoảng cách: thiếu năm KHÔNG được thành 0 (0 nghĩa là trùng năm).
-    assert feature(pair.tolist(), "year_diff") == 0.5
-    assert feature(pair.tolist(), "year_match") == 0.5
-    assert feature(pair.tolist(), "first_author_match") == 0.5
-    # cờ vẫn báo đúng là thiếu để mô hình phân biệt "thiếu" với "khác".
-    assert feature(pair.tolist(), "has_year") == 0.0
-    assert feature(pair.tolist(), "has_authors") == 0.0
-
-
-def test_fill_happens_after_composite_so_scores_are_not_distorted():
-    entries, candidates = make_paper_with_gaps()
-
-    raw = build_feature_matrix(entries, candidates)
-    filled = build_feature_matrix(entries, candidates, fill_missing=True)
-
-    # Hạng/margin ở ô có giá trị phải y hệt: điền 0 trước composite sẽ làm lệch chúng.
-    for name in ("composite_rank_in_pool", "composite_margin", "composite_col_rank_in_paper"):
-        known = ~np.isnan(column(raw, name))
-        np.testing.assert_allclose(column(filled, name)[known], column(raw, name)[known])
-
-
-def test_single_pair_context_fill_matches_kiet_spec():
-    filled = fill_missing_features(np.array(build_features(make_entry(), make_candidate())))
-
-    # Đường single-pair không có ma trận: không tính được -> hạng 1.0, margin 0.0.
-    assert feature(filled.tolist(), "composite_rank_in_pool") == 1.0
-    assert feature(filled.tolist(), "composite_col_rank_in_paper") == 1.0
-    assert feature(filled.tolist(), "composite_margin") == 0.0
-
-
-def test_fill_missing_features_does_not_mutate_input():
-    raw = build_feature_matrix(*make_paper_with_gaps())
-    snapshot = raw.copy()
+def test_fill_does_not_modify_its_input():
+    raw = np.full((1, 1, len(FEATURE_NAMES)), np.nan)
 
     fill_missing_features(raw)
 
-    np.testing.assert_array_equal(raw, snapshot)  # array_equal coi NaN ở cùng chỗ là bằng nhau
+    assert np.isnan(raw).all()
 
 
-def test_fill_missing_features_accepts_single_vector_and_flat_pairs():
+@pytest.mark.parametrize("shape", [(), (2,), (3,), (2, 3)])
+def test_fill_accepts_vectors_matrices_and_tensors(shape):
+    raw = np.full((*shape, len(FEATURE_NAMES)), np.nan)
+
+    assert fill_missing_features(raw).shape == raw.shape
+
+
+def test_fill_accepts_a_plain_feature_list_from_build_features():
     vector = build_features(make_entry(), make_candidate())
 
-    assert not np.isnan(fill_missing_features(np.array(vector))).any()
-    assert fill_missing_features(np.array([vector, vector])).shape == (2, len(FEATURE_NAMES))
+    filled = fill_missing_features(vector)
+
+    assert filled.shape == (len(FEATURE_NAMES),)
+    assert not np.isnan(filled).any()
 
 
-def test_fill_missing_features_rejects_wrong_column_count():
+@pytest.mark.parametrize("bad_shape", [(3,), (2, 5), (1, 2, len(FEATURE_NAMES) - 1)])
+def test_fill_rejects_wrong_number_of_columns(bad_shape):
     with pytest.raises(ValueError):
-        fill_missing_features(np.zeros((2, 3, len(FEATURE_NAMES) - 1)))
+        fill_missing_features(np.zeros(bad_shape))
 
 
-def test_fill_missing_handles_empty_paper():
-    assert build_feature_matrix([], [make_candidate()], fill_missing=True).shape[0] == 0
+def test_fill_rejects_a_scalar():
+    with pytest.raises(ValueError):
+        fill_missing_features(np.float64(1.0))
+
+
+def test_build_feature_matrix_fill_missing_flag():
+    entries, candidates = make_small_paper()
+    entries.append(make_entry(citation_key="c"))  # thiếu tiêu đề -> feature tiêu đề là NaN
+
+    raw = build_feature_matrix(entries, candidates)
+    filled = build_feature_matrix(entries, candidates, fill_missing=True)
+
+    assert np.isnan(column(raw, "title_lev_sim")[2]).all()  # mặc định giữ NaN thô
+    assert not np.isnan(filled).any()
+    assert (column(filled, "title_lev_sim")[2] == MISSING_FILL_VALUES["title_lev_sim"]).all()
+    # Ô có dữ liệu thật không bị đụng tới.
+    assert column(filled, "title_lev_sim")[0, 1] == column(raw, "title_lev_sim")[0, 1]
+
+
+def test_composite_columns_are_computed_before_filling_not_after():
+    # Entry và ứng viên cùng tiêu đề, không có tác giả/năm. Nếu điền (ví dụ 0.5) TRƯỚC khi
+    # tính composite thì tác giả/năm "giả" sẽ làm điểm lệch khỏi 1.0; điền SAU thì không.
+    entries = [make_entry(title="Attention Is All You Need")]
+    candidates = [make_candidate(ref_title="Attention Is All You Need")]
+
+    raw = build_feature_matrix(entries, candidates)
+    filled = build_feature_matrix(entries, candidates, fill_missing=True)
+
+    assert composite_score_matrix(raw)[0, 0] == pytest.approx(1.0)
+    assert composite_score_matrix(filled)[0, 0] != pytest.approx(1.0)  # bằng chứng cho thứ tự
+    for name in ("composite_rank_in_pool", "composite_margin", "composite_col_rank_in_paper"):
+        np.testing.assert_array_equal(column(filled, name), column(raw, name))
+
+
+def test_fill_values_of_flags_and_context_follow_spec():
+    assert MISSING_FILL_VALUES["has_title"] == 0.0
+    assert MISSING_FILL_VALUES["composite_rank_in_pool"] == 1.0
+    assert MISSING_FILL_VALUES["composite_margin"] == 0.0
+    assert MISSING_FILL_VALUES["composite_col_rank_in_paper"] == 1.0
+
+
+# ---- giá trị điền: điểm giống thì 0.0, khoảng cách năm thì giữa dải ----
+
+SIMILARITY_FEATURES = (
+    "arxiv_id_in_fields",
+    "title_lev_sim",
+    "title_word_jaccard",
+    "title_char3_jaccard",
+    "title_token_set",
+    "title_containment",
+    "title_tfidf_cos",
+    "first_author_match",
+    "author_surname_jaccard",
+    "year_match",
+)
+
+
+@pytest.mark.parametrize("name", SIMILARITY_FEATURES)
+def test_similarity_features_are_filled_with_zero_not_midrange(name):
+    # Thiếu dữ liệu = không có bằng chứng giống, không phải "giống vừa vừa" (0.5).
+    assert MISSING_FILL_VALUES[name] == 0.0
+
+
+def test_year_diff_is_filled_midrange_because_zero_means_same_year():
+    assert MISSING_FILL_VALUES["year_diff"] == 0.5
+
+
+def test_every_fill_value_lies_in_the_range_of_its_feature():
+    # Mọi feature (trừ margin có thể âm) nằm trong [0, 1]; giá trị điền không được vượt dải.
+    for name, value in MISSING_FILL_VALUES.items():
+        assert 0.0 <= value <= 1.0, name
+
+
+def test_filled_missing_title_never_outranks_a_candidate_with_a_title():
+    # Lý do chọn 0.0: sắp theo title_lev_sim (Naive baseline), ứng viên thiếu tiêu đề phải
+    # đứng sau mọi ứng viên có tiêu đề, kể cả ứng viên chẳng giống chút nào.
+    entry = make_entry(title="Attention Is All You Need")
+    candidates = [
+        make_candidate(ref_arxiv_id="1810.04805"),  # thiếu tiêu đề
+        make_candidate(ref_arxiv_id="1512.03385", ref_title="zzz qqq xxx"),  # sai hoàn toàn
+        make_candidate(ref_arxiv_id="1706.03762", ref_title="Attention is all you need"),
+    ]
+
+    filled = build_feature_matrix([entry], candidates, fill_missing=True)
+
+    similarity = column(filled, "title_lev_sim")[0]
+    assert similarity[0] == 0.0
+    assert similarity[0] < similarity[1] < similarity[2]
+    assert np.argsort(-similarity).tolist() == [2, 1, 0]  # thiếu tiêu đề xếp cuối
 
 def test_columns_to_mask_adds_composite_when_rule_uses_a_composite_signal():
     cols = columns_to_mask(["title_lev_sim"])
