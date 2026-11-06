@@ -28,6 +28,7 @@ Mã thoát: 0 xong; 1 còn lỗi (chạy lại để thử lại); 2 sai tham s�
 Thông điệp in ra màn hình cố ý viết không dấu cho console Windows.
 """
 
+import json 
 import argparse
 import logging
 import os
@@ -361,6 +362,7 @@ def run_pipeline(
     )  # fmt: skip
     write_json(paths.report("summary_stats", args.name), stats)
     prof.save(paths.report("profile_m1", args.name))
+    _write_failure_reports(paths, args.name, s2_results)
     _print_report(stats, paths, args.name)
     return EXIT_PARTIAL if interrupted else exit_code_for(stages, crawl_summary, s2_results)
 
@@ -380,6 +382,85 @@ def _print_report(stats: dict, paths: Paths, name: str) -> None:
     for name_, error in pipe["errors"].items():
         print(f"LOI luong {name_}: {error}")
     print(f"Bao cao: {paths.report('summary_stats', name)}")
+
+def _write_failure_reports(
+    paths: Paths,
+    name: str,
+    s2_results: list[s2_api.CrawlResult],
+) -> None:
+    """Ghi 2 file JSON chi tiết bài/version fail để debug sau full run.
+
+    - ``crawl_failures_<name>.json``: mọi version có status ``error`` hoặc ``blocked``
+      (đọc từ ``crawl_log.jsonl``, lấy trạng thái MỚI NHẤT cho mỗi (arxiv_id, version)).
+    - ``s2_failures_<name>.json``: mọi bài S2 có status ``failed`` hoặc ``not_found``.
+
+    Args:
+        paths: Đường dẫn của lần chạy.
+        name: Tên người chạy.
+        s2_results: Kết quả từ ``s2_api.run_s2_stage``.
+    """
+    # --- Crawl failures ---
+    crawl_failures: list[dict] = []
+    log_path = paths.out_dir / crawler.LOG_NAME
+    if log_path.exists():
+        state = crawler.load_log_state(log_path)
+        for (aid, v), r in sorted(state.items()):
+            if r.get("status") in (crawler.STATUS_ERROR, crawler.STATUS_BLOCKED):
+                crawl_failures.append({
+                    "arxiv_id": aid,
+                    "version": v,
+                    "status": r["status"],
+                    "reason": r.get("reason"),
+                    "url": r.get("url"),
+                    "attempts": r.get("attempts"),
+                    "seconds": r.get("seconds"),
+                })
+
+    # --- S2 failures ---
+    s2_failures = [
+        {"arxiv_id": r.arxiv_id, "status": r.status}
+        for r in s2_results
+        if r.status in ("failed", "not_found")
+    ]
+
+    # --- Metadata errors ---
+    metadata_errors: list[dict] = []
+    meta_err_path = paths.out_dir / crawler.METADATA_ERRORS_NAME
+    if meta_err_path.exists():
+        try:
+            metadata_errors = json.loads(meta_err_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logger.warning("Khong doc duoc %s", meta_err_path)
+
+    # Ghi 3 file
+    write_json(
+        paths.report("crawl_failures", name),
+        {"n_failures": len(crawl_failures), "failures": crawl_failures},
+    )
+    write_json(
+        paths.report("s2_failures", name),
+        {"n_failures": len(s2_failures), "failures": s2_failures},
+    )
+    if metadata_errors:
+        write_json(
+            paths.report("metadata_errors", name),
+            {"n_errors": len(metadata_errors), "errors": metadata_errors},
+        )
+
+    # Log tóm tắt
+    if crawl_failures:
+        logger.warning(
+            "%d version crawl fail -> xem %s",
+            len(crawl_failures), paths.report("crawl_failures", name),
+        )
+    if s2_failures:
+        n_not_found = sum(1 for f in s2_failures if f["status"] == "not_found")
+        n_failed = len(s2_failures) - n_not_found
+        logger.warning(
+            "%d bai S2 thieu refs (%d not_found + %d failed) -> xem %s",
+            len(s2_failures), n_not_found, n_failed,
+            paths.report("s2_failures", name),
+        )
 
 
 # ---------------------------------------------------------------------------
