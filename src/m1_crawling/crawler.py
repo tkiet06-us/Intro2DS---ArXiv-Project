@@ -88,6 +88,7 @@ RETRY_BACKOFF_S = (10.0, 30.0, 60.0)  # chờ trước mỗi lần thử lại (
 SINGLE_FILE_NAME = "main.tex"  # tên file khi nguồn là một .gz đơn
 LOG_NAME = "crawl_log.jsonl"
 SUMMARY_NAME = "crawl_summary.json"
+DISK_CHECK_EVERY = 500  # cứ N version vừa tải thì đo dung lượng output một lần (rglob tốn kém)
 METADATA_ERRORS_NAME = "metadata_errors.json"  # bài không dựng được metadata.json
 
 # [Review #1] Lý do "nghi lỗi tạm thời" (arXiv trả trang HTML lỗi, tải thiếu/hỏng): KHÔNG chốt
@@ -138,6 +139,10 @@ class CrawlBlockedError(RuntimeError):
 
 class CrawlAbortedError(RuntimeError):
     """Quá nhiều lỗi liên tiếp: dừng để không dồn dập request vào server đang có vấn đề."""
+
+
+class DiskLimitError(CrawlAbortedError):
+    """Dung lượng thư mục output vượt ``--max_disk_gb``: dừng sớm, chưa mất checkpoint."""
 
 
 class FetchError(RuntimeError):
@@ -215,7 +220,16 @@ def _safe_relpath(name: str) -> str | None:
     cleaned = [_BAD_FILENAME_CHARS.sub("_", part).rstrip(". ") for part in parts]
     if any(not part for part in cleaned):
         return None
-    return "/".join(cleaned)
+    original, renamed = "/".join(parts), "/".join(cleaned)
+    if renamed != original:
+        # File bị đổi tên trên đĩa nhưng \input{...} trong .tex vẫn trỏ tên gốc: M2 sẽ không
+        # resolve được file này. Chỉ cảnh báo để truy vết, không tự sửa nội dung .tex.
+        logger.warning(
+            "Doi ten file co ky tu khong hop le: %r -> %r (co the lam hong \\input/\\include)",
+            original,
+            renamed,
+        )
+    return renamed
 
 
 def _from_single_file(raw: bytes) -> Extracted:
@@ -685,10 +699,18 @@ def build_metadata(row: dict) -> dict:
             len(revised),
             _n_versions(row) - 1,
         )
+    authors = row.get("authors") or []
+    if isinstance(authors, (list, tuple)):
+        authors = list(authors)
+    else:
+        # list("John Doe") sẽ ra ['J', 'o', 'h', ...] mà schema Paper vẫn chấp nhận: bọc lại.
+        logger.warning("%s: authors khong phai list (%s), boc thanh list 1 phan tu",
+                       row.get("arxiv_id"), type(authors).__name__)
+        authors = [str(authors)]
     metadata = {
         "arxiv_id": row["arxiv_id"],
         "title": row.get("title") or None,
-        "authors": list(row.get("authors") or []),
+        "authors": authors,
         "submission_date": _iso_date(row.get("v1_date")),
         "revised_dates": revised,
         "venue": row.get("venue") or None,
@@ -1156,6 +1178,7 @@ def run(
     max_consecutive_errors: int = 10,
     resume: bool = True,
     api_fallback: bool = True,
+    max_disk_gb: float | None = None,
 ) -> dict:
     """Crawl lần lượt từng bài, từng version; có Checkpoint/Resume.
 
@@ -1167,6 +1190,8 @@ def run(
         max_consecutive_errors: Dừng sau chừng này version lỗi LIÊN TIẾP.
         resume: True bỏ qua version đã xong theo log; False tải lại tất cả (ghi đè).
         api_fallback: True thì bài thiếu ``n_versions`` được tra bằng arXiv API trước khi crawl.
+        max_disk_gb: Dừng (``DiskLimitError``) khi thư mục output vượt mức này (GB); None là
+            không giới hạn. Đo mỗi ``DISK_CHECK_EVERY`` version vừa tải, nên có thể vượt nhẹ.
 
     Returns:
         Dict tổng hợp (``summarize``), có thêm khóa ``exit_code``, ``n_versions_from_api``,
@@ -1175,8 +1200,10 @@ def run(
     Raises:
         ValueError: Khi còn bài thiếu/sai ``n_versions`` (kiểm tra TRƯỚC khi tải bất kỳ gì).
         CrawlBlockedError: Khi arXiv trả HTTP 403.
-        CrawlAbortedError: Khi quá nhiều lỗi liên tiếp.
+        CrawlAbortedError: Khi quá nhiều lỗi liên tiếp (hoặc ``DiskLimitError`` khi đầy đĩa).
     """
+    if max_disk_gb is not None and max_disk_gb <= 0:
+        raise ValueError(f"max_disk_gb phai > 0, nhan {max_disk_gb}")
     out_dir.mkdir(parents=True, exist_ok=True)
     # [Review #3] Kiểm tra (và nếu được, tự điền từ API) n_versions của TẤT CẢ bài trước khi
     # crawl, để không có bài nào âm thầm chỉ tải v1.
@@ -1248,6 +1275,13 @@ def run(
                 raise CrawlAbortedError(
                     f"{consecutive_errors} loi lien tiep, dung de tranh dan dap"
                 )
+            if max_disk_gb is not None and fetched_now % DISK_CHECK_EVERY == 0:
+                disk_gb = _dir_bytes(out_dir) / 1024**3
+                if disk_gb > max_disk_gb:
+                    raise DiskLimitError(
+                        f"Dia output {disk_gb:.2f} GB vuot --max_disk_gb {max_disk_gb} GB "
+                        f"(da tai {fetched_now} version trong lan chay nay)"
+                    )
     summary = summarize(state, papers, out_dir, time.monotonic() - started)
     summary["exit_code"] = 1 if summary["by_status"].get(STATUS_ERROR) else 0
     summary["n_versions_from_api"] = from_api
@@ -1386,6 +1420,7 @@ def crawl_range(
     write_metadata: bool = True,
     max_consecutive_errors: int = 10,
     api_fallback: bool = True,
+    max_disk_gb: float | None = None,
     fetcher: PoliteFetcher | None = None,
 ) -> dict:
     """Crawl mọi bài trong ``[id_start, id_end]``, có Checkpoint/Resume.
@@ -1405,6 +1440,7 @@ def crawl_range(
         write_metadata: Ghi ``metadata.json`` cho mỗi bài.
         max_consecutive_errors: Dừng sau chừng này version lỗi liên tiếp.
         api_fallback: True thì thiếu ``n_versions`` trong discovery sẽ tra arXiv API.
+        max_disk_gb: Dừng (``DiskLimitError``) khi thư mục output vượt mức này (GB).
         fetcher: Bộ tải có sẵn (tests truyền bản giả); None là tạo mới.
 
     Returns:
@@ -1434,6 +1470,7 @@ def crawl_range(
         max_consecutive_errors=max_consecutive_errors,
         resume=resume,
         api_fallback=api_fallback,
+        max_disk_gb=max_disk_gb,
     )
     add_coverage(summary, papers, id_start, id_end, limit)  # [Review #3] độ phủ so với dải
     write_json(out_dir / SUMMARY_NAME, summary)
@@ -1469,6 +1506,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--limit", default=None, type=int, help="Chi crawl N bai dau (chay thu)")
     add("--max_consecutive_errors", default=10, type=int)
+    add(
+        "--max_disk_gb",
+        default=None,
+        type=float,
+        help="Dung khi thu muc output vuot nguong nay (GB). Mac dinh khong gioi han.",
+    )
     add("--no_metadata", action="store_true", help="Khong ghi metadata.json")
     add(
         "--no_api_fallback",
@@ -1498,13 +1541,23 @@ def main(argv: list[str] | None = None) -> int:
 
     Returns:
         Mã thoát: 0 xong; 1 còn version lỗi (chạy lại để thử lại); 2 sai tham số;
-        3 bị arXiv chặn (HTTP 403); 4 dừng vì quá nhiều lỗi liên tiếp.
+        3 bị arXiv chặn (HTTP 403); 4 dừng vì quá nhiều lỗi liên tiếp; 5 đầy đĩa (--max_disk_gb).
     """
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.delay < MIN_DELAY_S:
         print(f"LOI: --delay phai >= {MIN_DELAY_S} giay (quy dinh arXiv).", file=sys.stderr)
         return 2
+    if args.max_disk_gb is not None and args.max_disk_gb <= 0:
+        print("LOI: --max_disk_gb phai > 0.", file=sys.stderr)
+        return 2
+    if args.limit is not None and args.limit < 10:
+        # select_papers lay N bai dau theo ID; cac bai lien nhau co the toan PDF-only.
+        print(
+            f"CANH BAO: --limit {args.limit} chi lay {args.limit} bai dau theo ID, co the toan bai "
+            "khong co TeX nen smoke test khong dai dien. Nen dung --limit >= 10.",
+            file=sys.stderr,
+        )
     if not args.contact:
         print(
             f"LOI: can --contact (hoac bien moi truong {CONTACT_ENV}) cho User-Agent.",
@@ -1529,6 +1582,7 @@ def main(argv: list[str] | None = None) -> int:
             max_consecutive_errors=args.max_consecutive_errors,
             resume=not args.fresh,
             api_fallback=not args.no_api_fallback,
+            max_disk_gb=args.max_disk_gb,
         )
     except ValueError as exc:  # [Review #3] thieu n_versions: dung truoc khi tai gi
         print(f"LOI du lieu discovery: {exc}", file=sys.stderr)
@@ -1536,6 +1590,9 @@ def main(argv: list[str] | None = None) -> int:
     except CrawlBlockedError as exc:
         print(f"\nBI CHAN: {exc}. DUNG NGAY. Cho vai gio, kiem tra User-Agent/delay roi chay lai.")
         return 3
+    except DiskLimitError as exc:
+        print(f"\nDAY DIA: {exc}. Don/chuyen du lieu hoac tang --max_disk_gb roi chay lai CUNG LENH.")
+        return 5
     except CrawlAbortedError as exc:
         print(f"\nDUNG: {exc}. Kiem tra mang roi chay lai CUNG LENH de tiep tuc.")
         return 4
