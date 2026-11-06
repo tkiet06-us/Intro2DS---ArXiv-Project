@@ -1,11 +1,11 @@
-"""Unit tests cho src/latex_parser.py (dùng tests/mock_data)."""
+"""Unit tests cho src/m2_parsing/latex_parser.py (dùng tests/mock_data)."""
 
 import logging
 from pathlib import Path
 
 import pytest
 
-from src.latex_parser import find_main_tex, resolve_includes
+from src.m2_parsing.latex_parser import find_main_tex, resolve_includes
 
 PREAMBLE = "\\documentclass{article}\n\\begin{document}\n"
 

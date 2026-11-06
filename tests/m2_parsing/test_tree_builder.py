@@ -1,12 +1,16 @@
-"""Unit tests cho src/tree_builder.py."""
+"""Unit tests cho src/m2_parsing/tree_builder.py."""
 
+from src.m2_parsing.tree_builder import _normalize_display_math, to_nested
+from src.m2_parsing.tree_builder import build_tree as _parse_tree
 from src.schemas import Kind
-from src.tree_builder import _normalize_display_math, build_tree
 
 
-ARXIV_ID = "2411.03799" 
- 
-# build_tree trả về dict lồng nhau, nên cần hàm duyệt cây thay cho list node cũ.
+def _build(latex: str) -> dict:
+    """Adapter: ``build_tree`` trả list[ParsedNode]; test cũ duyệt dạng cây lồng nhau."""
+    return to_nested(_parse_tree(latex, 1))
+
+
+# Cây trả về dạng dict lồng nhau, nên cần hàm duyệt cây thay cho list node cũ.
 def _walk(node):
     yield node
     for child in node["children"]:
@@ -39,7 +43,7 @@ def test_display_math_conversion():
 $$x^2 + y^2 = z^2$$
 \[a = b\]
 \end{document}"""
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     formulas = [n for n in _walk(tree) if n["kind"] == Kind.FORMULA]
     assert len(formulas) == 2
     assert formulas[0]["content"] == r"\begin{equation} x^2 + y^2 = z^2 \end{equation}"
@@ -54,7 +58,7 @@ def test_auto_close_missing_end():
 \section{Second}
 Some text.
 \end{document}"""
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     figures = [n for n in _walk(tree) if n["kind"] == Kind.FIGURE]
     assert len(figures) == 1
     assert figures[0]["content"].endswith(r"\end{figure}")
@@ -133,8 +137,10 @@ SPEC_OUTLINE = [
         3,
         "v1-fig1",
         "figure",
-        "\\begin{figure}[ht]\n\\caption{Visualization of 4-coloring on a planar triangulation.}\n"
-        "\\label{fig:planar_graph}\n\\end{figure}",
+        (
+            "\\begin{figure}[ht]\n\\caption{Visualization of 4-coloring on a planar triangulation.}\n"
+            "\\label{fig:planar_graph}\n\\end{figure}"
+        ),
     ),
     (1, "v1-h4", "heading", "Acknowledgments"),
     (2, "v1-s9", "sentence", "This research was supported by the VNU-HCM Research Grant."),
@@ -144,7 +150,7 @@ SPEC_OUTLINE = [
 
 
 def test_spec_full_example():
-    assert _outline(build_tree(SPEC_TEX, ARXIV_ID)) == SPEC_OUTLINE
+    assert _outline(_build(SPEC_TEX)) == SPEC_OUTLINE
 
 
 # Mục 4.1: level động.
@@ -156,20 +162,20 @@ def test_dynamic_levels():
 Deep text.
 \section{S2}
 \end{document}"""
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     assert [(d, c) for d, _, k, c in _outline(tree) if k == "heading"] == [
         (1, "C"), (2, "S"), (3, "T"), (2, "S2"),
     ]
  
     # Nhảy cấp section -> subsubsection: không sinh nút rỗng trung gian.
     tex = r"\begin{document}\section{A}\subsubsection{B}Text here.\end{document}"
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     assert [(d, c) for d, _, k, c in _outline(tree) if k == "heading"] == [(1, "A"), (2, "B")]
  
  
 # Mục 4.2: văn bản trước heading đầu tiên và bài không có heading gắn vào root.
 def test_text_without_heading_attaches_to_root():
-    tree = build_tree(r"\begin{document}Intro text. More text.\end{document}", ARXIV_ID)
+    tree = _build(r"\begin{document}Intro text. More text.\end{document}")
     assert [c["kind"] for c in tree["children"]] == ["sentence", "sentence"]
  
  
@@ -181,7 +187,7 @@ def test_heading_title_cleanup():
         r"\section{\texorpdfstring{$\alpha$ test}{Alpha test}}"
         r"\end{document}"
     )
-    assert _headings(build_tree(tex, ARXIV_ID)) == ["A bold and $\\Delta$-Coloring", "Alpha test"]
+    assert _headings(_build(tex)) == ["A bold and $\\Delta$-Coloring", "Alpha test"]
  
  
 # Mục 5.1: không tách sai ở viết tắt, số thập phân, URL, toán nội dòng, tên viết tắt.
@@ -193,7 +199,7 @@ def test_sentence_splitting_protects_entities():
         r"Let $x = 1. 5$ hold. J. D. Watson wrote it."
         r"\end{document}"
     )
-    assert _sentences(build_tree(tex, ARXIV_ID)) == [
+    assert _sentences(_build(tex)) == [
         "Smith et al. showed the bound.",
         "The value is 3.14 and .05 here.",
         "See Fig. 2 for details, i.e. the plot.",
@@ -212,7 +218,7 @@ f = \mu N
 \end{equation}
 where $\mu$ is the coefficient.
 \end{document}"""
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     assert [c["kind"] for c in tree["children"]] == ["sentence", "formula", "sentence"]
  
  
@@ -228,7 +234,7 @@ a &= b \label{eq:1}
 \end{table}
 Inline $x^2$ stays.
 \end{document}"""
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     kinds = [c["kind"] for c in tree["children"]]
     assert kinds == ["formula", "figure", "sentence"]  # tabular nằm trong table, không tách riêng
     assert tree["children"][0]["content"] == "\\begin{align}\na &= b \\label{eq:1}\n\\end{align}"
@@ -247,7 +253,7 @@ def test_nested_lists():
   \end{enumerate}
 \end{itemize}
 \end{document}"""
-    got = [(d, k, c) for d, _, k, c in _outline(build_tree(tex, ARXIV_ID))][2:]
+    got = [(d, k, c) for d, _, k, c in _outline(_build(tex))][2:]
     assert got == [
         (2, "itemize", ""),
         (3, "item", ""),
@@ -275,7 +281,7 @@ Thanks.
 \section{Proof}
 Done.
 \end{document}"""
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     assert _headings(tree) == ["Intro", "Acknowledgments", "Proof"]
     assert _sentences(tree) == ["Hello world.", "Thanks.", "Done."]
  
@@ -293,7 +299,7 @@ Nested entry.
 Proof.
 \bibliography{refs}
 \end{document}"""
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     assert _headings(tree) == ["Intro", "Appendix A"]
     assert _sentences(tree) == ["Hello.", "Proof."]
  
@@ -310,7 +316,7 @@ Appendix intro.
 \section{Extra}
 Details.
 \end{document}"""
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     assert _headings(tree) == ["Intro", "Extra"]
     assert _sentences(tree) == ["Hello.", "Appendix intro.", "Details."]
  
@@ -327,7 +333,7 @@ Body.
 We thank everyone.
 \end{acknowledgments}
 \end{document}"""
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     assert [(c["kind"], c["content"]) for c in tree["children"]] == [
         ("heading", "Abstract"),
         ("heading", "Intro"),
@@ -341,7 +347,7 @@ def test_comments_removed():
         "\\begin{document}\nReal sentence. % Hidden \\section{Nope}\n"
         "Next one. Gain was 50\\% higher.\n\\end{document}"
     )
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     assert _headings(tree) == []
     assert _sentences(tree) == ["Real sentence.", "Next one.", "Gain was 50\\% higher."]
  
@@ -354,16 +360,16 @@ def test_transparent_environments():
 Every graph is colorable.
 \end{theorem}
 \end{document}"""
-    tree = build_tree(tex, ARXIV_ID)
+    tree = _build(tex)
     section = tree["children"][0]
     assert [c["content"] for c in section["children"]] == ["Every graph is colorable."]
  
  
 # Mục 7.1 và 7.5.
 def test_empty_input_and_empty_section():
-    tree = build_tree("", ARXIV_ID)
+    tree = _build("")
     assert tree == {"id": "root1", "kind": "document", "content": "Version 1 root", "children": []}
  
-    tree = build_tree(r"\begin{document}\section{Empty}\end{document}", ARXIV_ID)
+    tree = _build(r"\begin{document}\section{Empty}\end{document}")
     assert tree["children"][0]["content"] == "Empty"
     assert tree["children"][0]["children"] == []

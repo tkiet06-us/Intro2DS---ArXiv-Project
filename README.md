@@ -779,7 +779,7 @@ Dùng `huggingface_hub` để upload 6 bảng Parquet và Dataset Card. Bộ t�
 | `m1_crawling.s2_api` | `fetch_references(arxiv_id)` | Lấy `references.json` (kèm `paperId`, `authors`, `year`, `publicationDate`, `venue`) |
 | `m1_crawling.profiler` | `Profiler` (context manager) | Đo RAM đỉnh & **RAM trung bình** (lấy mẫu định kỳ), time/bài & thời gian TB/bài, đĩa max, `n_refs` & `n_refs_co_arxiv_id`, **dung lượng output cuối**, **tổng thời gian discovery** |
 | `m2_parsing.latex_parser` | `find_main_tex`, `resolve_includes` | Tìm file chính, ghép `\input` |
-| `m2_parsing.tree_builder` | `build_tree(latex, arxiv_id)` | Dựng `hierarchy.json` |
+| `m2_parsing.tree_builder` | `build_tree(latex, version)` | Dựng `hierarchy.json` |
 | `m2_parsing.latex_cleanup` | `cleanup_latex`, `normalize_math` | Dọn LaTeX, chuẩn hóa toán |
 | `m2_parsing.bibtex_extractor` | `extract_bibitems(latex)` | `\bibitem` → danh sách entry |
 | `m2_parsing.dedup` | `dedup_bibtex`, `dedup_fulltext` | Khử trùng lặp |
