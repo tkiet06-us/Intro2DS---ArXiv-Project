@@ -609,6 +609,7 @@ class PoliteFetcher:
             attempt += 1
             self._wait_turn()
             retry_after: float | None = None
+            quiet = False                      # True: lỗi đứt kết nối thường gặp, không log
             headers = {"Accept-Encoding": "identity"}
             if partial:
                 headers["Range"] = f"bytes={len(partial)}-"
@@ -655,14 +656,16 @@ class PoliteFetcher:
                     response.close()
             except requests.RequestException as exc:
                 last_error = f"{type(exc).__name__}: {str(exc)[:120]}"
+                quiet = isinstance(exc, requests.exceptions.ChunkedEncodingError)
             finally:
                 self._last_end = self._clock()
 
             # --- Đến đây là lần thử thất bại: quyết định chờ bao lâu hoặc bỏ cuộc ---
             if len(partial) > best:
-                best, stalls = len(partial), 0      # có tiến triển: reset bộ đếm
-                wait = 0.0                          # đã có tiến triển thì thử lại ngay (vẫn cách >= delay)
-                logger.info("Dut o %d byte, tiep tuc tu day (%s)", best, last_error)
+                best, stalls = len(partial), 0
+                wait = 0.0
+                if not quiet:
+                    logger.info("Dut o %d byte, tiep tuc tu day (%s)", best, last_error)
             else:
                 stalls += 1
                 if stalls > len(self._backoff):
@@ -670,7 +673,10 @@ class PoliteFetcher:
                         f"{last_error}: {stalls} lan lien tiep khong tien trien ({best} byte): {url}"
                     )
                 wait = max(self._backoff[stalls - 1], retry_after or 0.0)
-                logger.warning("Loi tam thoi (%s), khong tien trien, thu lai sau %.0fs", last_error, wait)
+                if not quiet:
+                    logger.warning(
+                        "Loi tam thoi (%s), khong tien trien, thu lai sau %.0fs", last_error, wait
+                    )
             if max_total_seconds is not None and self._clock() - started + wait > max_total_seconds:
                 raise FetchError(f"qua {max_total_seconds:.0f}s ma chua xong ({best} byte): {url}")
             if wait:
