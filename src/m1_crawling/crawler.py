@@ -84,7 +84,7 @@ KEEP_EXTENSIONS = frozenset({".tex", ".bib"})  # ảnh và mọi loại khác kh
 MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024  # chặn file tải về quá lớn
 MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024  # chặn "zip bomb"
 MAX_KEPT_FILE_BYTES = 50 * 1024 * 1024  # một file .tex/.bib lớn hơn mức này bị bỏ qua
-RETRY_BACKOFF_S = (10.0, 30.0, 60.0)  # chờ trước mỗi lần thử lại (lỗi mạng, HTTP 5xx, 429)
+RETRY_BACKOFF_S = (4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0)  # chờ trước mỗi lần thử lại (lỗi mạng, HTTP 5xx, 429)
 SINGLE_FILE_NAME = "main.tex"  # tên file khi nguồn là một .gz đơn
 LOG_NAME = "crawl_log.jsonl"
 SUMMARY_NAME = "crawl_summary.json"
@@ -382,23 +382,63 @@ def write_version(folder: Path, version: int, files: dict[str, bytes]) -> None:
     Ghi vào thư mục tạm rồi đổi tên, nên chương trình bị ngắt giữa chừng không để lại
     thư mục ``v{n}`` ghi dở. ``files`` rỗng tạo thư mục rỗng (record rỗng).
 
-    Args:
-        folder: Thư mục của bài (``<out>/2506-00788``).
-        version: Số version.
-        files: Đường dẫn tương đối -> nội dung bytes (tên đã qua ``_safe_relpath``).
+    Windows Defender/Search Indexer đôi khi lock file/thư mục vài giây khiến
+    ``shutil.rmtree`` hoặc ``os.replace`` ném ``PermissionError``. Hàm này:
+
+    - Dùng thư mục tạm có tên UNIQUE mỗi lần, nên không bao giờ phải xóa tmp cũ (tránh
+      được vòng lặp "tmp cũ bị lock → rmtree fail → tmp cũ còn → lần sau lại fail").
+    - Retry ``os.replace`` vài lần với backoff; nếu vẫn fail thì raise để caller đánh error.
+    - Dọn tmp của chính lần này nếu fail (không đụng tmp cũ).
     """
-    tmp = folder / f".v{version}.tmp"
     final = folder / f"v{version}"
-    if tmp.exists():
-        shutil.rmtree(tmp)
+    # Tên tmp unique: nếu Defender lock tmp của lần trước, ta vẫn tạo được tmp mới.
+    tmp = folder / f".v{version}.{os.getpid()}.{int(time.monotonic() * 1_000_000)}.tmp"
     tmp.mkdir(parents=True)
-    for relpath, content in files.items():
-        target = tmp / relpath
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
-    if final.exists():
-        shutil.rmtree(final)
-    tmp.replace(final)
+    try:
+        for relpath, content in files.items():
+            target = tmp / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        if final.exists():
+            _rmtree_with_retry(final)
+        # Retry os.replace: Defender/Indexer có thể lock tmp trong vài giây.
+        last_error: Exception | None = None
+        for wait in (0.5, 1.0, 2.0, 4.0):
+            try:
+                tmp.replace(final)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                logger.warning(
+                    "PermissionError khi doi ten %s -> %s, thu lai sau %.1fs",
+                    tmp, final, wait,
+                )
+                time.sleep(wait)
+        raise last_error  # type: ignore[misc]
+    except Exception:
+        _rmtree_with_retry(tmp, ignore_errors=True)
+        raise
+
+
+def _rmtree_with_retry(path: Path, *, ignore_errors: bool = False) -> None:
+    """``shutil.rmtree`` có retry cho Windows/Defender/Indexer lock.
+
+    Args:
+        path: Thư mục cần xóa (không tồn tại thì bỏ qua).
+        ignore_errors: True thì nuốt lỗi cuối cùng (dùng khi dọn tmp trong except).
+    """
+    if not path.exists():
+        return
+    last_error: Exception | None = None
+    for wait in (0.5, 1.0, 2.0, 4.0):
+        try:
+            shutil.rmtree(path)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(wait)
+    if not ignore_errors:
+        raise last_error  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +511,7 @@ class PoliteFetcher:
             if remaining > 0:
                 self._sleep(remaining)
 
-    def _request(self, url: str) -> requests.Response:
+    def _request(self, url: str, headers: dict | None = None) -> requests.Response:
         """Gửi GET, KHÔNG để ``requests`` tự đi theo redirect.
 
         [Review #8] Nếu ``export.arxiv.org`` chuyển hướng sang ``arxiv.org`` thì tự động đi theo
@@ -488,7 +528,7 @@ class PoliteFetcher:
                 self._last_end = self._clock()  # request trước vừa kết thúc
                 self._wait_turn()
             response = self.session.get(
-                current, stream=True, timeout=self._timeout, allow_redirects=False
+                current, headers=headers, stream=True, timeout=self._timeout, allow_redirects=False
             )
             if response.status_code not in _REDIRECT_CODES:
                 return response
@@ -570,22 +610,36 @@ class PoliteFetcher:
         """
         started = self._clock()
         last_error = "khong ro"
+        partial = bytearray()                      # giữ qua các lần thử
         for attempt in range(len(self._backoff) + 1):
             self._wait_turn()
-            retry_after: float | None = None
+            retry_after = None
+            headers = {"Accept-Encoding": "identity"}
+            if partial:
+                headers["Range"] = f"bytes={len(partial)}-"
             try:
-                response = self._request(url)  # không tự theo redirect (xem _request)
+                response = self._request(url, headers)
                 try:
                     status = response.status_code
                     if status == 403:
                         raise CrawlBlockedError(f"HTTP 403 khi tai {url}")
                     if status in (404, 410):
                         return FetchResult(status, b"", None, attempt + 1, self._clock() - started)
-                    if status == 200:
-                        body = self._read_body(response)
-                        content_type = response.headers.get("Content-Type")
+                    if status in (200, 206):
+                        if status == 200:
+                            partial.clear()        # server gửi lại từ đầu
+                        elif not response.headers.get("Content-Range", "").startswith(
+                            f"bytes {len(partial)}-"
+                        ):
+                            partial.clear()
+                            raise requests.exceptions.ChunkedEncodingError("Content-Range lech")
+                        for chunk in response.iter_content(chunk_size=1 << 16):
+                            partial.extend(chunk)  # lưu dần, đứt giữa chừng vẫn còn
+                            if len(partial) > MAX_DOWNLOAD_BYTES:
+                                raise TooLargeError("file tai ve qua lon", downloaded=len(partial))
                         return FetchResult(
-                            status, body, content_type, attempt + 1, self._clock() - started
+                            200, bytes(partial), response.headers.get("Content-Type"),
+                            attempt + 1, self._clock() - started,
                         )
                     last_error = f"HTTP {status}"
                     if status == 429 or status >= 500:
