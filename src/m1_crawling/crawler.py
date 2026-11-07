@@ -84,10 +84,11 @@ KEEP_EXTENSIONS = frozenset({".tex", ".bib"})  # ảnh và mọi loại khác kh
 MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024  # chặn file tải về quá lớn
 MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024  # chặn "zip bomb"
 MAX_KEPT_FILE_BYTES = 50 * 1024 * 1024  # một file .tex/.bib lớn hơn mức này bị bỏ qua
-RETRY_BACKOFF_S = (10.0, 30.0, 60.0)  # chờ trước mỗi lần thử lại (lỗi mạng, HTTP 5xx, 429)
+RETRY_BACKOFF_S = (4.0, 5.0)  # chờ trước mỗi lần thử lại (lỗi mạng, HTTP 5xx, 429)
 SINGLE_FILE_NAME = "main.tex"  # tên file khi nguồn là một .gz đơn
 LOG_NAME = "crawl_log.jsonl"
 SUMMARY_NAME = "crawl_summary.json"
+DISK_CHECK_EVERY = 500  # cứ N version vừa tải thì đo dung lượng output một lần (rglob tốn kém)
 METADATA_ERRORS_NAME = "metadata_errors.json"  # bài không dựng được metadata.json
 
 # [Review #1] Lý do "nghi lỗi tạm thời" (arXiv trả trang HTML lỗi, tải thiếu/hỏng): KHÔNG chốt
@@ -138,6 +139,10 @@ class CrawlBlockedError(RuntimeError):
 
 class CrawlAbortedError(RuntimeError):
     """Quá nhiều lỗi liên tiếp: dừng để không dồn dập request vào server đang có vấn đề."""
+
+
+class DiskLimitError(CrawlAbortedError):
+    """Dung lượng thư mục output vượt ``--max_disk_gb``: dừng sớm, chưa mất checkpoint."""
 
 
 class FetchError(RuntimeError):
@@ -215,7 +220,16 @@ def _safe_relpath(name: str) -> str | None:
     cleaned = [_BAD_FILENAME_CHARS.sub("_", part).rstrip(". ") for part in parts]
     if any(not part for part in cleaned):
         return None
-    return "/".join(cleaned)
+    original, renamed = "/".join(parts), "/".join(cleaned)
+    if renamed != original:
+        # File bị đổi tên trên đĩa nhưng \input{...} trong .tex vẫn trỏ tên gốc: M2 sẽ không
+        # resolve được file này. Chỉ cảnh báo để truy vết, không tự sửa nội dung .tex.
+        logger.warning(
+            "Doi ten file co ky tu khong hop le: %r -> %r (co the lam hong \\input/\\include)",
+            original,
+            renamed,
+        )
+    return renamed
 
 
 def _from_single_file(raw: bytes) -> Extracted:
@@ -368,23 +382,63 @@ def write_version(folder: Path, version: int, files: dict[str, bytes]) -> None:
     Ghi vào thư mục tạm rồi đổi tên, nên chương trình bị ngắt giữa chừng không để lại
     thư mục ``v{n}`` ghi dở. ``files`` rỗng tạo thư mục rỗng (record rỗng).
 
-    Args:
-        folder: Thư mục của bài (``<out>/2506-00788``).
-        version: Số version.
-        files: Đường dẫn tương đối -> nội dung bytes (tên đã qua ``_safe_relpath``).
+    Windows Defender/Search Indexer đôi khi lock file/thư mục vài giây khiến
+    ``shutil.rmtree`` hoặc ``os.replace`` ném ``PermissionError``. Hàm này:
+
+    - Dùng thư mục tạm có tên UNIQUE mỗi lần, nên không bao giờ phải xóa tmp cũ (tránh
+      được vòng lặp "tmp cũ bị lock → rmtree fail → tmp cũ còn → lần sau lại fail").
+    - Retry ``os.replace`` vài lần với backoff; nếu vẫn fail thì raise để caller đánh error.
+    - Dọn tmp của chính lần này nếu fail (không đụng tmp cũ).
     """
-    tmp = folder / f".v{version}.tmp"
     final = folder / f"v{version}"
-    if tmp.exists():
-        shutil.rmtree(tmp)
+    # Tên tmp unique: nếu Defender lock tmp của lần trước, ta vẫn tạo được tmp mới.
+    tmp = folder / f".v{version}.{os.getpid()}.{int(time.monotonic() * 1_000_000)}.tmp"
     tmp.mkdir(parents=True)
-    for relpath, content in files.items():
-        target = tmp / relpath
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
-    if final.exists():
-        shutil.rmtree(final)
-    tmp.replace(final)
+    try:
+        for relpath, content in files.items():
+            target = tmp / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        if final.exists():
+            _rmtree_with_retry(final)
+        # Retry os.replace: Defender/Indexer có thể lock tmp trong vài giây.
+        last_error: Exception | None = None
+        for wait in (0.5, 1.0, 2.0, 4.0):
+            try:
+                tmp.replace(final)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                logger.warning(
+                    "PermissionError khi doi ten %s -> %s, thu lai sau %.1fs",
+                    tmp, final, wait,
+                )
+                time.sleep(wait)
+        raise last_error  # type: ignore[misc]
+    except Exception:
+        _rmtree_with_retry(tmp, ignore_errors=True)
+        raise
+
+
+def _rmtree_with_retry(path: Path, *, ignore_errors: bool = False) -> None:
+    """``shutil.rmtree`` có retry cho Windows/Defender/Indexer lock.
+
+    Args:
+        path: Thư mục cần xóa (không tồn tại thì bỏ qua).
+        ignore_errors: True thì nuốt lỗi cuối cùng (dùng khi dọn tmp trong except).
+    """
+    if not path.exists():
+        return
+    last_error: Exception | None = None
+    for wait in (0.5, 1.0, 2.0, 4.0):
+        try:
+            shutil.rmtree(path)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(wait)
+    if not ignore_errors:
+        raise last_error  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +511,7 @@ class PoliteFetcher:
             if remaining > 0:
                 self._sleep(remaining)
 
-    def _request(self, url: str) -> requests.Response:
+    def _request(self, url: str, headers: dict | None = None) -> requests.Response:
         """Gửi GET, KHÔNG để ``requests`` tự đi theo redirect.
 
         [Review #8] Nếu ``export.arxiv.org`` chuyển hướng sang ``arxiv.org`` thì tự động đi theo
@@ -474,7 +528,7 @@ class PoliteFetcher:
                 self._last_end = self._clock()  # request trước vừa kết thúc
                 self._wait_turn()
             response = self.session.get(
-                current, stream=True, timeout=self._timeout, allow_redirects=False
+                current, headers=headers, stream=True, timeout=self._timeout, allow_redirects=False
             )
             if response.status_code not in _REDIRECT_CODES:
                 return response
@@ -539,39 +593,58 @@ class PoliteFetcher:
         self._check_complete(response, body)
         return body
 
-    def get(self, url: str) -> FetchResult:
-        """Tải một URL, thử lại khi lỗi tạm thời.
+    def get(self, url: str, max_total_seconds: float | None = 3600) -> FetchResult:
+        """Tải một URL, tiếp tục từ chỗ đứt cho tới khi đủ file.
 
-        Args:
-            url: URL ``export.arxiv.org/src/...``.
-
-        Returns:
-            Kết quả khi nhận HTTP 200 (kèm body) hoặc 404/410 (body rỗng).
-
-        Raises:
-            CrawlBlockedError: Khi nhận HTTP 403 (dừng ngay, không thử lại).
-            TooLargeError: Khi body vượt ``MAX_DOWNLOAD_BYTES`` (không thử lại).
-            ForbiddenRedirectError: Khi bị chuyển hướng ra ngoài ``export.arxiv.org``.
-            FetchError: Khi hết số lần thử lại mà vẫn lỗi, hoặc gặp mã HTTP bất thường.
+        Chỉ bỏ cuộc khi: (a) len(backoff)+1 lần thử LIÊN TIẾP không tải thêm được byte nào,
+        (b) quá max_total_seconds (None = không giới hạn), (c) vượt MAX_DOWNLOAD_BYTES.
         """
         started = self._clock()
         last_error = "khong ro"
-        for attempt in range(len(self._backoff) + 1):
+        partial = bytearray()          # giữ qua các lần thử
+        best = 0                       # số byte lớn nhất từng đạt, để đo "có tiến triển"
+        stalls = 0                     # số lần thử liên tiếp KHÔNG tiến triển
+        attempt = 0
+        while True:
+            attempt += 1
             self._wait_turn()
             retry_after: float | None = None
+            quiet = False                      # True: lỗi đứt kết nối thường gặp, không log
+            headers = {"Accept-Encoding": "identity"}
+            if partial:
+                headers["Range"] = f"bytes={len(partial)}-"
             try:
-                response = self._request(url)  # không tự theo redirect (xem _request)
+                response = self._request(url, headers)
                 try:
                     status = response.status_code
                     if status == 403:
                         raise CrawlBlockedError(f"HTTP 403 khi tai {url}")
                     if status in (404, 410):
-                        return FetchResult(status, b"", None, attempt + 1, self._clock() - started)
-                    if status == 200:
-                        body = self._read_body(response)
-                        content_type = response.headers.get("Content-Type")
+                        return FetchResult(status, b"", None, attempt, self._clock() - started)
+                    if status in (200, 206):
+                        total: int | None = None
+                        if status == 200:
+                            partial.clear()  # server gửi lại từ đầu
+                            length = response.headers.get("Content-Length", "")
+                            total = int(length) if length.isdigit() else None
+                        else:
+                            crange = response.headers.get("Content-Range", "")
+                            if not crange.startswith(f"bytes {len(partial)}-"):
+                                partial.clear()
+                                raise requests.exceptions.ChunkedEncodingError("Content-Range lech")
+                            tail = crange.rsplit("/", 1)[-1]
+                            total = int(tail) if tail.isdigit() else None
+                        for chunk in response.iter_content(chunk_size=1 << 16):
+                            partial.extend(chunk)  # lưu dần, đứt giữa chừng vẫn còn
+                            if len(partial) > MAX_DOWNLOAD_BYTES:
+                                raise TooLargeError("file tai ve qua lon", downloaded=len(partial))
+                        if total is not None and len(partial) < total:
+                            raise requests.exceptions.ChunkedEncodingError(
+                                f"tai thieu: {len(partial)}/{total} byte"
+                            )
                         return FetchResult(
-                            status, body, content_type, attempt + 1, self._clock() - started
+                            200, bytes(partial), response.headers.get("Content-Type"),
+                            attempt, self._clock() - started,
                         )
                     last_error = f"HTTP {status}"
                     if status == 429 or status >= 500:
@@ -582,14 +655,32 @@ class PoliteFetcher:
                 finally:
                     response.close()
             except requests.RequestException as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
+                last_error = f"{type(exc).__name__}: {str(exc)[:120]}"
+                quiet = isinstance(exc, requests.exceptions.ChunkedEncodingError)
             finally:
                 self._last_end = self._clock()
-            if attempt < len(self._backoff):
-                wait = max(self._backoff[attempt], retry_after or 0.0)
-                logger.warning("Loi tam thoi (%s), thu lai sau %.0fs", last_error, wait)
+
+            # --- Đến đây là lần thử thất bại: quyết định chờ bao lâu hoặc bỏ cuộc ---
+            if len(partial) > best:
+                best, stalls = len(partial), 0
+                wait = 0.0
+                if not quiet:
+                    logger.info("Dut o %d byte, tiep tuc tu day (%s)", best, last_error)
+            else:
+                stalls += 1
+                if stalls > len(self._backoff):
+                    raise FetchError(
+                        f"{last_error}: {stalls} lan lien tiep khong tien trien ({best} byte): {url}"
+                    )
+                wait = max(self._backoff[stalls - 1], retry_after or 0.0)
+                if not quiet:
+                    logger.warning(
+                        "Loi tam thoi (%s), khong tien trien, thu lai sau %.0fs", last_error, wait
+                    )
+            if max_total_seconds is not None and self._clock() - started + wait > max_total_seconds:
+                raise FetchError(f"qua {max_total_seconds:.0f}s ma chua xong ({best} byte): {url}")
+            if wait:
                 self._sleep(wait)
-        raise FetchError(f"{last_error} sau {len(self._backoff) + 1} lan thu: {url}")
 
 
 # ---------------------------------------------------------------------------
@@ -685,10 +776,18 @@ def build_metadata(row: dict) -> dict:
             len(revised),
             _n_versions(row) - 1,
         )
+    authors = row.get("authors") or []
+    if isinstance(authors, (list, tuple)):
+        authors = list(authors)
+    else:
+        # list("John Doe") sẽ ra ['J', 'o', 'h', ...] mà schema Paper vẫn chấp nhận: bọc lại.
+        logger.warning("%s: authors khong phai list (%s), boc thanh list 1 phan tu",
+                       row.get("arxiv_id"), type(authors).__name__)
+        authors = [str(authors)]
     metadata = {
         "arxiv_id": row["arxiv_id"],
         "title": row.get("title") or None,
-        "authors": list(row.get("authors") or []),
+        "authors": authors,
         "submission_date": _iso_date(row.get("v1_date")),
         "revised_dates": revised,
         "venue": row.get("venue") or None,
@@ -1156,6 +1255,7 @@ def run(
     max_consecutive_errors: int = 10,
     resume: bool = True,
     api_fallback: bool = True,
+    max_disk_gb: float | None = None,
 ) -> dict:
     """Crawl lần lượt từng bài, từng version; có Checkpoint/Resume.
 
@@ -1167,6 +1267,8 @@ def run(
         max_consecutive_errors: Dừng sau chừng này version lỗi LIÊN TIẾP.
         resume: True bỏ qua version đã xong theo log; False tải lại tất cả (ghi đè).
         api_fallback: True thì bài thiếu ``n_versions`` được tra bằng arXiv API trước khi crawl.
+        max_disk_gb: Dừng (``DiskLimitError``) khi thư mục output vượt mức này (GB); None là
+            không giới hạn. Đo mỗi ``DISK_CHECK_EVERY`` version vừa tải, nên có thể vượt nhẹ.
 
     Returns:
         Dict tổng hợp (``summarize``), có thêm khóa ``exit_code``, ``n_versions_from_api``,
@@ -1175,8 +1277,10 @@ def run(
     Raises:
         ValueError: Khi còn bài thiếu/sai ``n_versions`` (kiểm tra TRƯỚC khi tải bất kỳ gì).
         CrawlBlockedError: Khi arXiv trả HTTP 403.
-        CrawlAbortedError: Khi quá nhiều lỗi liên tiếp.
+        CrawlAbortedError: Khi quá nhiều lỗi liên tiếp (hoặc ``DiskLimitError`` khi đầy đĩa).
     """
+    if max_disk_gb is not None and max_disk_gb <= 0:
+        raise ValueError(f"max_disk_gb phai > 0, nhan {max_disk_gb}")
     out_dir.mkdir(parents=True, exist_ok=True)
     # [Review #3] Kiểm tra (và nếu được, tự điền từ API) n_versions của TẤT CẢ bài trước khi
     # crawl, để không có bài nào âm thầm chỉ tải v1.
@@ -1248,6 +1352,13 @@ def run(
                 raise CrawlAbortedError(
                     f"{consecutive_errors} loi lien tiep, dung de tranh dan dap"
                 )
+            if max_disk_gb is not None and fetched_now % DISK_CHECK_EVERY == 0:
+                disk_gb = _dir_bytes(out_dir) / 1024**3
+                if disk_gb > max_disk_gb:
+                    raise DiskLimitError(
+                        f"Dia output {disk_gb:.2f} GB vuot --max_disk_gb {max_disk_gb} GB "
+                        f"(da tai {fetched_now} version trong lan chay nay)"
+                    )
     summary = summarize(state, papers, out_dir, time.monotonic() - started)
     summary["exit_code"] = 1 if summary["by_status"].get(STATUS_ERROR) else 0
     summary["n_versions_from_api"] = from_api
@@ -1386,6 +1497,7 @@ def crawl_range(
     write_metadata: bool = True,
     max_consecutive_errors: int = 10,
     api_fallback: bool = True,
+    max_disk_gb: float | None = None,
     fetcher: PoliteFetcher | None = None,
 ) -> dict:
     """Crawl mọi bài trong ``[id_start, id_end]``, có Checkpoint/Resume.
@@ -1405,6 +1517,7 @@ def crawl_range(
         write_metadata: Ghi ``metadata.json`` cho mỗi bài.
         max_consecutive_errors: Dừng sau chừng này version lỗi liên tiếp.
         api_fallback: True thì thiếu ``n_versions`` trong discovery sẽ tra arXiv API.
+        max_disk_gb: Dừng (``DiskLimitError``) khi thư mục output vượt mức này (GB).
         fetcher: Bộ tải có sẵn (tests truyền bản giả); None là tạo mới.
 
     Returns:
@@ -1434,6 +1547,7 @@ def crawl_range(
         max_consecutive_errors=max_consecutive_errors,
         resume=resume,
         api_fallback=api_fallback,
+        max_disk_gb=max_disk_gb,
     )
     add_coverage(summary, papers, id_start, id_end, limit)  # [Review #3] độ phủ so với dải
     write_json(out_dir / SUMMARY_NAME, summary)
@@ -1469,6 +1583,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--limit", default=None, type=int, help="Chi crawl N bai dau (chay thu)")
     add("--max_consecutive_errors", default=10, type=int)
+    add(
+        "--max_disk_gb",
+        default=None,
+        type=float,
+        help="Dung khi thu muc output vuot nguong nay (GB). Mac dinh khong gioi han.",
+    )
     add("--no_metadata", action="store_true", help="Khong ghi metadata.json")
     add(
         "--no_api_fallback",
@@ -1498,13 +1618,23 @@ def main(argv: list[str] | None = None) -> int:
 
     Returns:
         Mã thoát: 0 xong; 1 còn version lỗi (chạy lại để thử lại); 2 sai tham số;
-        3 bị arXiv chặn (HTTP 403); 4 dừng vì quá nhiều lỗi liên tiếp.
+        3 bị arXiv chặn (HTTP 403); 4 dừng vì quá nhiều lỗi liên tiếp; 5 đầy đĩa (--max_disk_gb).
     """
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.delay < MIN_DELAY_S:
         print(f"LOI: --delay phai >= {MIN_DELAY_S} giay (quy dinh arXiv).", file=sys.stderr)
         return 2
+    if args.max_disk_gb is not None and args.max_disk_gb <= 0:
+        print("LOI: --max_disk_gb phai > 0.", file=sys.stderr)
+        return 2
+    if args.limit is not None and args.limit < 10:
+        # select_papers lay N bai dau theo ID; cac bai lien nhau co the toan PDF-only.
+        print(
+            f"CANH BAO: --limit {args.limit} chi lay {args.limit} bai dau theo ID, co the toan bai "
+            "khong co TeX nen smoke test khong dai dien. Nen dung --limit >= 10.",
+            file=sys.stderr,
+        )
     if not args.contact:
         print(
             f"LOI: can --contact (hoac bien moi truong {CONTACT_ENV}) cho User-Agent.",
@@ -1529,6 +1659,7 @@ def main(argv: list[str] | None = None) -> int:
             max_consecutive_errors=args.max_consecutive_errors,
             resume=not args.fresh,
             api_fallback=not args.no_api_fallback,
+            max_disk_gb=args.max_disk_gb,
         )
     except ValueError as exc:  # [Review #3] thieu n_versions: dung truoc khi tai gi
         print(f"LOI du lieu discovery: {exc}", file=sys.stderr)
@@ -1536,6 +1667,9 @@ def main(argv: list[str] | None = None) -> int:
     except CrawlBlockedError as exc:
         print(f"\nBI CHAN: {exc}. DUNG NGAY. Cho vai gio, kiem tra User-Agent/delay roi chay lai.")
         return 3
+    except DiskLimitError as exc:
+        print(f"\nDAY DIA: {exc}. Don/chuyen du lieu hoac tang --max_disk_gb roi chay lai CUNG LENH.")
+        return 5
     except CrawlAbortedError as exc:
         print(f"\nDUNG: {exc}. Kiem tra mang roi chay lai CUNG LENH de tiep tuc.")
         return 4

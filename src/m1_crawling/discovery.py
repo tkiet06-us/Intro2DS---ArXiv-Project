@@ -5,7 +5,7 @@ VA chay that (full mode) de thu thap metadata 5.000 bai cho crawler.
 Thiet ke:
   * Moi (phuong phap, lan lap) chay trong 1 TIEN TRINH RIENG => RAM dinh khong bi lan giua cac phuong phap.
   * Lap R lan (mac dinh 3), xen ke de giam sai lech do mang troi.
-  * Che do "full": quet Kaggle lay ngay version -> goi API lay so version chuan -> ghi data/raw/discovery.jsonl
+  * Che do "full": quet Kaggle lay ngay version -> goi API lay so version chuan -> ghi data/raw/discovery_25k.jsonl
 
 Cai dat:  pip install requests feedparser sickle pandas psutil
 Chay benchmark: python discovery.py --mode benchmark --contact "email@example.com" ...
@@ -862,7 +862,8 @@ if __name__ == "__main__":
     add("--download-seconds", type=float, default=None)
     add("--chunksize", type=int, default=200_000)
     add("--ram-limit-mb", type=float, default=6000)
-    add("--out", default="data/raw/discovery.jsonl", help="(mode full) file jsonl ban giao cho P2-01")
+    add("--out", default="data/raw/discovery_25k.jsonl",
+        help="(mode full/patch) file jsonl ban giao cho P2-01 (crawler.py doc mac dinh file nay)")
     add("--report", default="discovery_full_result.json", help="(mode full) file bao cao do thoi gian/doi chieu")
     add("--patch-report", default="discovery_patch_result.json", help="(mode patch) file bao cao va version_dates")
     add("--worker", default=None, help="(noi bo)")

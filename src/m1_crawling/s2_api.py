@@ -43,6 +43,16 @@ S2_BATCH_FIELDS = "references.paperId,references.title,references.authors,refere
 # Lỗi tạm thời: chờ rồi thử lại. Các lỗi khác (400, 401, 403...) thử lại cũng vô ích.
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_BACKOFF_SECONDS = 60
+# Lỗi do CHÍNH request của ta sai (URL/header hỏng): thử lại bao nhiêu lần cũng vô ích nên ném ngay.
+# Mọi RequestException còn lại (Timeout, ConnectionError, ChunkedEncodingError,
+# ContentDecodingError...) là lỗi tạm thời: chờ rồi thử lại.
+_NON_RETRYABLE_REQUEST_ERRORS = (
+    requests.exceptions.InvalidURL,
+    requests.exceptions.InvalidSchema,
+    requests.exceptions.MissingSchema,
+    requests.exceptions.InvalidHeader,
+    requests.exceptions.URLRequired,
+)
 # Khớp hậu tố version, ví dụ "2310.12345v2" -> "2310.12345". ID cũ như "hep-th/9901001"
 # không kết thúc bằng vN nên không bị ảnh hưởng.
 VERSION_SUFFIX = re.compile(r"v\d+$")
@@ -71,8 +81,12 @@ class S2Settings(BaseModel):
         Returns:
             Cấu hình đã kiểm tra kiểu.
         """
-        with Path(config_path).open(encoding="utf-8") as handle:
-            section = (yaml.safe_load(handle) or {}).get("s2_api") or {}
+        try:
+            with Path(config_path).open(encoding="utf-8") as handle:
+                section = (yaml.safe_load(handle) or {}).get("s2_api") or {}
+        except FileNotFoundError:
+            logger.warning("Khong thay %s, dung cau hinh S2 mac dinh", config_path)
+            return cls()
         return cls(**{key: section[key] for key in cls.model_fields if key in section})
 
 
@@ -200,8 +214,10 @@ class S2Client:
                     response = self._session.get(
                         url, params=params, headers=headers, timeout=self._settings.timeout
                     )
-            except (requests.Timeout, requests.ConnectionError):
-                reason, wait = "lỗi mạng", self._backoff(attempt)
+            except _NON_RETRYABLE_REQUEST_ERRORS:
+                raise
+            except requests.RequestException as exc:
+                reason, wait = f"lỗi mạng ({type(exc).__name__})", self._backoff(attempt)
             else:
                 status = response.status_code
                 if status == 200:
@@ -472,6 +488,7 @@ def crawl_references(
         logger.warning("S2 không có bài %s", arxiv_id)
         return CrawlResult(arxiv_id=arxiv_id, status="not_found")
     by_arxiv = to_references_json(arxiv_id, refs)
+    paper_dir.mkdir(parents=True, exist_ok=True)
     write_json(paper_dir / "references_all.json", [ref.model_dump(mode="json") for ref in refs])
     # Ghi references.json SAU CÙNG: file này tồn tại nghĩa là bài đã xong hoàn toàn.
     write_json(target, by_arxiv)
@@ -538,10 +555,22 @@ def crawl_references_batch(
         batch_started = time.perf_counter()
         try:
             fetch_results = fetch_references_batch(to_fetch, client)
+        except requests.HTTPError as exc:
+            if exc.response is None or exc.response.status_code != 400:
+                raise
+            logger.warning("Batch 400, chuyển sang GET từng bài (%d bài)", len(to_fetch))
+            for aid in to_fetch:
+                try:
+                    fetch_results[aid] = fetch_references(aid, client)
+                except requests.HTTPError as inner:
+                    if inner.response is not None and inner.response.status_code == 400:
+                        fetch_results[aid] = None  # S2 không nhận ID này: not_found
+                    else:
+                        failed_ids.add(aid)
+                except S2Error:
+                    failed_ids.add(aid)
         except (S2Error, requests.RequestException):
-            logger.exception("Lỗi batch khi lấy references; chuyển toàn nhóm sang failed")
-            # Cả nhóm failed; fetch_results để trống, vòng lặp bên dưới check
-            # failed_ids trước nên không cần sentinel.
+            logger.exception("Lỗi batch; chuyển toàn nhóm sang failed")
             failed_ids = set(to_fetch)
         finally:
             # to_fetch không rỗng nên không chia cho 0.
@@ -575,6 +604,7 @@ def crawl_references_batch(
                     result = CrawlResult(arxiv_id=arxiv_id, status="not_found")
                 else:
                     by_arxiv = to_references_json(arxiv_id, refs)
+                    paper_dir.mkdir(parents=True, exist_ok=True)
                     write_json(
                         paper_dir / "references_all.json",
                         [ref.model_dump(mode="json") for ref in refs],
@@ -694,12 +724,22 @@ def count_saved_references(root: Path) -> tuple[int, int, int]:
     Returns:
         (số bài đã có references.json, tổng số ref, tổng số ref có arXiv ID). Bài thiếu
         references_all.json (dữ liệu cũ) chỉ góp vào số bài và số ref có arXiv ID.
+        references.json hỏng (không đọc được) bị bỏ qua hoàn toàn, kể cả khỏi số bài, để
+        trung bình ref/bài không bị kéo thấp; mỗi file hỏng được ghi một warning.
     """
     n_papers = n_refs = n_arxiv = 0
     for by_arxiv_file in sorted(root.glob("*/references.json")):
+        try:
+            n_by_arxiv = len(read_json(by_arxiv_file))
+        except (OSError, ValueError, TypeError):
+            logger.warning("Bỏ qua references.json hỏng: %s", by_arxiv_file, exc_info=True)
+            continue
         n_papers += 1
-        n_arxiv += len(read_json(by_arxiv_file))
+        n_arxiv += n_by_arxiv
         all_file = by_arxiv_file.parent / "references_all.json"
         if all_file.exists():
-            n_refs += len(read_json(all_file))
+            try:
+                n_refs += len(read_json(all_file))
+            except (OSError, ValueError, TypeError):
+                logger.warning("Bỏ qua references_all.json hỏng: %s", all_file, exc_info=True)
     return n_papers, n_refs, n_arxiv
