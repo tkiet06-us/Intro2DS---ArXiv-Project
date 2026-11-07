@@ -84,7 +84,7 @@ KEEP_EXTENSIONS = frozenset({".tex", ".bib"})  # ảnh và mọi loại khác kh
 MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024  # chặn file tải về quá lớn
 MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024  # chặn "zip bomb"
 MAX_KEPT_FILE_BYTES = 50 * 1024 * 1024  # một file .tex/.bib lớn hơn mức này bị bỏ qua
-RETRY_BACKOFF_S = (4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0)  # chờ trước mỗi lần thử lại (lỗi mạng, HTTP 5xx, 429)
+RETRY_BACKOFF_S = (4.0, 5.0)  # chờ trước mỗi lần thử lại (lỗi mạng, HTTP 5xx, 429)
 SINGLE_FILE_NAME = "main.tex"  # tên file khi nguồn là một .gz đơn
 LOG_NAME = "crawl_log.jsonl"
 SUMMARY_NAME = "crawl_summary.json"
@@ -593,27 +593,22 @@ class PoliteFetcher:
         self._check_complete(response, body)
         return body
 
-    def get(self, url: str) -> FetchResult:
-        """Tải một URL, thử lại khi lỗi tạm thời.
+    def get(self, url: str, max_total_seconds: float | None = 3600) -> FetchResult:
+        """Tải một URL, tiếp tục từ chỗ đứt cho tới khi đủ file.
 
-        Args:
-            url: URL ``export.arxiv.org/src/...``.
-
-        Returns:
-            Kết quả khi nhận HTTP 200 (kèm body) hoặc 404/410 (body rỗng).
-
-        Raises:
-            CrawlBlockedError: Khi nhận HTTP 403 (dừng ngay, không thử lại).
-            TooLargeError: Khi body vượt ``MAX_DOWNLOAD_BYTES`` (không thử lại).
-            ForbiddenRedirectError: Khi bị chuyển hướng ra ngoài ``export.arxiv.org``.
-            FetchError: Khi hết số lần thử lại mà vẫn lỗi, hoặc gặp mã HTTP bất thường.
+        Chỉ bỏ cuộc khi: (a) len(backoff)+1 lần thử LIÊN TIẾP không tải thêm được byte nào,
+        (b) quá max_total_seconds (None = không giới hạn), (c) vượt MAX_DOWNLOAD_BYTES.
         """
         started = self._clock()
         last_error = "khong ro"
-        partial = bytearray()                      # giữ qua các lần thử
-        for attempt in range(len(self._backoff) + 1):
+        partial = bytearray()          # giữ qua các lần thử
+        best = 0                       # số byte lớn nhất từng đạt, để đo "có tiến triển"
+        stalls = 0                     # số lần thử liên tiếp KHÔNG tiến triển
+        attempt = 0
+        while True:
+            attempt += 1
             self._wait_turn()
-            retry_after = None
+            retry_after: float | None = None
             headers = {"Accept-Encoding": "identity"}
             if partial:
                 headers["Range"] = f"bytes={len(partial)}-"
@@ -624,22 +619,31 @@ class PoliteFetcher:
                     if status == 403:
                         raise CrawlBlockedError(f"HTTP 403 khi tai {url}")
                     if status in (404, 410):
-                        return FetchResult(status, b"", None, attempt + 1, self._clock() - started)
+                        return FetchResult(status, b"", None, attempt, self._clock() - started)
                     if status in (200, 206):
+                        total: int | None = None
                         if status == 200:
-                            partial.clear()        # server gửi lại từ đầu
-                        elif not response.headers.get("Content-Range", "").startswith(
-                            f"bytes {len(partial)}-"
-                        ):
-                            partial.clear()
-                            raise requests.exceptions.ChunkedEncodingError("Content-Range lech")
+                            partial.clear()  # server gửi lại từ đầu
+                            length = response.headers.get("Content-Length", "")
+                            total = int(length) if length.isdigit() else None
+                        else:
+                            crange = response.headers.get("Content-Range", "")
+                            if not crange.startswith(f"bytes {len(partial)}-"):
+                                partial.clear()
+                                raise requests.exceptions.ChunkedEncodingError("Content-Range lech")
+                            tail = crange.rsplit("/", 1)[-1]
+                            total = int(tail) if tail.isdigit() else None
                         for chunk in response.iter_content(chunk_size=1 << 16):
                             partial.extend(chunk)  # lưu dần, đứt giữa chừng vẫn còn
                             if len(partial) > MAX_DOWNLOAD_BYTES:
                                 raise TooLargeError("file tai ve qua lon", downloaded=len(partial))
+                        if total is not None and len(partial) < total:
+                            raise requests.exceptions.ChunkedEncodingError(
+                                f"tai thieu: {len(partial)}/{total} byte"
+                            )
                         return FetchResult(
                             200, bytes(partial), response.headers.get("Content-Type"),
-                            attempt + 1, self._clock() - started,
+                            attempt, self._clock() - started,
                         )
                     last_error = f"HTTP {status}"
                     if status == 429 or status >= 500:
@@ -650,14 +654,27 @@ class PoliteFetcher:
                 finally:
                     response.close()
             except requests.RequestException as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
+                last_error = f"{type(exc).__name__}: {str(exc)[:120]}"
             finally:
                 self._last_end = self._clock()
-            if attempt < len(self._backoff):
-                wait = max(self._backoff[attempt], retry_after or 0.0)
-                logger.warning("Loi tam thoi (%s), thu lai sau %.0fs", last_error, wait)
+
+            # --- Đến đây là lần thử thất bại: quyết định chờ bao lâu hoặc bỏ cuộc ---
+            if len(partial) > best:
+                best, stalls = len(partial), 0      # có tiến triển: reset bộ đếm
+                wait = 0.0                          # đã có tiến triển thì thử lại ngay (vẫn cách >= delay)
+                logger.info("Dut o %d byte, tiep tuc tu day (%s)", best, last_error)
+            else:
+                stalls += 1
+                if stalls > len(self._backoff):
+                    raise FetchError(
+                        f"{last_error}: {stalls} lan lien tiep khong tien trien ({best} byte): {url}"
+                    )
+                wait = max(self._backoff[stalls - 1], retry_after or 0.0)
+                logger.warning("Loi tam thoi (%s), khong tien trien, thu lai sau %.0fs", last_error, wait)
+            if max_total_seconds is not None and self._clock() - started + wait > max_total_seconds:
+                raise FetchError(f"qua {max_total_seconds:.0f}s ma chua xong ({best} byte): {url}")
+            if wait:
                 self._sleep(wait)
-        raise FetchError(f"{last_error} sau {len(self._backoff) + 1} lan thu: {url}")
 
 
 # ---------------------------------------------------------------------------
