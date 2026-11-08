@@ -46,6 +46,7 @@ _DOI_RE = re.compile(
     re.IGNORECASE,
 )
 _BARE_DOI_RE = re.compile(r"(?<![\w/])(?P<doi>10\.\d{4,9}/[^\s{}<>\"']+)", re.IGNORECASE)
+_DOI_PREFIX = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi\s*:\s*)", re.IGNORECASE)
 
 _URL_COMMAND_RE = re.compile(r"\\url\s*\{([^{}]*)\}", re.IGNORECASE)
 _HREF_COMMAND_RE = re.compile(r"\\href\s*\{([^{}]*)\}\s*\{([^{}]*)\}", re.IGNORECASE)
@@ -83,6 +84,12 @@ _ENTRY_START_RE = re.compile(
     re.IGNORECASE,
 )
 _FIELD_RE = re.compile(r"(?P<name>[A-Za-z][\w-]*)\s*=\s*", re.IGNORECASE)
+
+# Dạng APA thường gặp ở \bibitem không có \emph: "Lee, B. (2019). Graph nets."
+_APA_RE = re.compile(
+    r"^(?P<authors>.+?)\s*\(\s*(?:18|19|20|21)\d{2}[a-z]?\s*\)\s*[.,]?\s*(?P<rest>.*)$",
+    re.DOTALL,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -257,8 +264,8 @@ def _find_year(raw: str) -> tuple[int | None, tuple[int, int] | None]:
 
 
 def _clean_doi(value: str) -> str | None:
-    """Bỏ tiền tố/đuôi câu khỏi DOI, giữ nguyên dấu ngoặc cân bằng bên trong."""
-    doi = value.strip().rstrip(".,;:")
+    """Bỏ tiền tố URL/``doi:``/đuôi câu khỏi DOI, giữ dấu ngoặc cân bằng bên trong."""
+    doi = _DOI_PREFIX.sub("", value.strip()).rstrip(".,;:")
     while doi.endswith(")") and doi.count("(") < doi.count(")"):
         doi = doi[:-1].rstrip(".,;:")
     return doi or None
@@ -326,24 +333,25 @@ def _author_key(name: str) -> str:
 
 
 def _authors_from_text(text: str) -> list[str]:
-    """Tách danh sách tác giả theo ``and``/``&``/``;`` và cặp ``Họ, Tên``."""
     text = _latex_to_text(text, strip_period=False)
     if not text:
         return []
-
-    parts = [part for part in re.split(r"\s+\band\b\s+|\s*&\s*", text, flags=re.IGNORECASE) if part.strip()]
-    expanded: list[str] = []
+    text = re.sub(r"[,;]?\s*\bet\s+al\.?", "", text, flags=re.IGNORECASE)
+    parts = [p for p in re.split(r"\s+\band\b\s+|\s*&\s*|\s*;\s*", text, flags=re.IGNORECASE) if p.strip(" ,")]
+    out: list[str] = []
     for part in parts:
-        expanded.extend(piece for piece in re.split(r"\s*;\s*", part) if piece.strip())
-    parts = expanded
+        tokens = [t.strip() for t in part.split(",") if t.strip()]
+        if len(tokens) > 1 and all(" " in t for t in tokens):   # "J. Smith, A. Doe"
+            out.extend(tokens)
+        elif len(tokens) >= 4 and len(tokens) % 2 == 0:          # "Smith, J., Doe, A."
+            out.extend(f"{tokens[i]}, {tokens[i+1]}" for i in range(0, len(tokens), 2))
+        else:
+            out.append(part)
+    return [a for a in map(_tidy_author, out) if a]
 
-    # "Smith, J., Doe, A." là 2 tác giả, không phải 1 chuỗi: ghép từng cặp token.
-    if len(parts) == 1 and parts[0].count(",") >= 2:
-        tokens = [token.strip() for token in parts[0].split(",") if token.strip()]
-        if len(tokens) >= 4 and len(tokens) % 2 == 0:
-            parts = [f"{tokens[i]}, {tokens[i + 1]}" for i in range(0, len(tokens), 2)]
-
-    return [part.strip(" ,;") for part in parts if part.strip(" ,;")]
+def _tidy_author(name: str) -> str:
+    name = name.strip(" ,;")
+    return name[:-1] if re.search(r"[A-Za-z]{3,}\.$", name) else name  # "Lee." -> "Lee", giữ "J."
 
 
 def _journal_from_suffix(suffix: str) -> str | None:
@@ -360,6 +368,24 @@ def _journal_from_suffix(suffix: str) -> str | None:
             continue
         candidates.append(text)
     return ", ".join(candidates) or None
+
+
+def _split_plain(raw: str) -> tuple[str, str, str]:
+    """Tách ``(authors, title, suffix)`` cho ``\\bibitem`` không có ``\\emph``.
+
+    Nhận diện dạng APA (``Lee, B. (2019). Title. Venue.``) và dạng
+    ``A. Author. Title. Journal, 2020.``; trả authors rỗng khi không nhận ra.
+    """
+    raw = raw.strip()
+    match = _APA_RE.match(raw)
+    if match:
+        parts = re.split(r"(?<=[a-z0-9\)])\.\s+", match["rest"], maxsplit=1)
+        return match["authors"], parts[0], parts[1] if len(parts) > 1 else ""
+
+    parts = re.split(r"(?<![\s.][A-Z])(?<=[a-z0-9\)])\.\s+", raw)
+    if len(parts) >= 3:  # "A. Author. Title. Journal, 2020."
+        return parts[0], parts[1], " ".join(parts[2:])
+    return "", raw, ""
 
 
 def _parse_entry(citation_key: str, raw_text: str, entry_type: str = "misc") -> dict:
@@ -383,16 +409,16 @@ def _parse_entry(citation_key: str, raw_text: str, entry_type: str = "misc") -> 
         authors_prefix = ""
         suffix = raw_text
     else:
-        before_year = raw_text[: year_span[0]] if year_span else raw_text
-        segments = _split_top_level(before_year, ",")
-        if len(segments) >= 2:
-            authors_prefix = segments[0]
-            title = _latex_to_text(segments[1]) or None
-            suffix = ",".join(segments[2:]) + (raw_text[year_span[1] :] if year_span else "")
-        else:
-            authors_prefix = ""
-            title = _latex_to_text(before_year) or None
-            suffix = raw_text[year_span[1] :] if year_span else ""
+        authors_prefix, title_text, suffix = _split_plain(raw_text)
+        if not authors_prefix and not suffix:
+            # Dạng phẩy "A. Author, Title, Venue, 2020." chưa nhận diện ở trên.
+            before_year = raw_text[: year_span[0]] if year_span else raw_text
+            segments = _split_top_level(before_year, ",")
+            if len(segments) >= 2:
+                authors_prefix = segments[0]
+                title_text = segments[1]
+                suffix = ",".join(segments[2:]) + (raw_text[year_span[1] :] if year_span else "")
+        title = _latex_to_text(title_text) or None
 
     authors = _authors_from_text(bibinfo.get("author") or authors_prefix)
     if journal is None:
@@ -571,9 +597,8 @@ def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[di
 # Ghi refs.bib chuẩn hóa
 # ---------------------------------------------------------------------------
 def _escape_bib_value(value: object) -> str:
-    """Escape tối thiểu để giá trị không phá cú pháp ``{...}`` của BibTeX."""
-    text = str(value)
-    return text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("%", "\\%")
+    """Escape tối thiểu cho giá trị đã là văn bản thuần sau ``_latex_to_text``."""
+    return re.sub(r"(?<!\\)%", r"\\%", str(value)).replace("{", "").replace("}", "")
 
 
 def format_bibtex_entry(entry: dict, fallback_key: str = "cite1") -> str:

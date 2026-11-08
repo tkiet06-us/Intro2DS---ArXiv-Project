@@ -160,21 +160,46 @@ def _compatible(left: Mapping[str, object], right: Mapping[str, object]) -> bool
     return not (left_authors and right_authors) or bool(left_authors & right_authors)
 
 
-def _prefer_longer(current: object, incoming: object) -> object:
-    """Chọn giá trị dài hơn; coi chuỗi rỗng/None là thiếu."""
-    current_text, incoming_text = _as_text(current), _as_text(incoming)
-    if current_text is None:
+def _merge_text(current: object, incoming: object) -> object:
+    """Chọn bản text đầy đủ hơn mà không lấy bản bị đính thêm tác giả/venue.
+
+    Bản bị cắt cụt (prefix của bản kia) nhường chỗ cho bản đầy đủ; bản chỉ dài hơn
+    vì chứa thêm tác giả/venue thì giữ nguyên bản sạch.
+    """
+    if not _as_text(current):
         return incoming
-    if incoming_text is None:
+    if not _as_text(incoming):
         return current
-    return incoming if len(incoming_text) > len(current_text) else current
+    left = _normalize_title(current) or ""
+    right = _normalize_title(incoming) or ""
+    if left == right or left.startswith(right):
+        return current
+    if right.startswith(left):
+        return incoming  # current bị cắt cụt
+    if left in right:
+        return current  # incoming dính thêm tác giả/venue
+    if right in left:
+        return incoming  # current nhiều hơn, incoming sạch hơn
+    return current
+
+
+def _author_sig(name: str) -> tuple[str, str]:
+    """Khóa so khớp tác giả bỏ qua thứ tự ``J. Smith`` và ``Smith, J.``."""
+    normalized = re.sub(r"[^\w\s,]", " ", name.casefold())
+    if "," in normalized:
+        surname, _, rest = normalized.partition(",")
+    else:
+        tokens = normalized.split()
+        surname, rest = (tokens[-1], " ".join(tokens[:-1])) if tokens else ("", "")
+    first = rest.split()[0][0] if rest.split() else ""
+    return surname.strip(), first
 
 
 def _merge_entry(target: dict, incoming: Mapping[str, object]) -> None:
     """Field Union: điền chỗ thiếu và chọn giá trị đầy đủ hơn cho ``target``."""
-    target["title"] = _prefer_longer(target.get("title"), incoming.get("title"))
-    target["journal"] = _prefer_longer(target.get("journal"), incoming.get("journal"))
-    target["url"] = _prefer_longer(target.get("url"), incoming.get("url"))
+    target["title"] = _merge_text(target.get("title"), incoming.get("title"))
+    target["journal"] = _merge_text(target.get("journal"), incoming.get("journal"))
+    target["url"] = _merge_text(target.get("url"), incoming.get("url"))
     target["doi"] = target.get("doi") or incoming.get("doi")
     if target.get("year") is None:
         target["year"] = incoming.get("year")
@@ -185,11 +210,12 @@ def _merge_entry(target: dict, incoming: Mapping[str, object]) -> None:
         target["entry_type"] = incoming.get("entry_type")
 
     authors = target.get("authors") or []
-    seen = {author.casefold() for author in authors}
+    seen = {_author_sig(author) for author in authors}
     for author in incoming.get("authors") or []:
-        if author.casefold() not in seen:
+        signature = _author_sig(author)
+        if signature not in seen:
             authors.append(author)
-            seen.add(author.casefold())
+            seen.add(signature)
     target["authors"] = authors
 
 
@@ -313,6 +339,95 @@ def dedup_bibtex(entries: list[dict]) -> tuple[list[dict], dict]:
     return deduplicated, citation_key_map
 
 
+def dedup_bibtex_versions(
+    by_version: Mapping[int, list[dict]],
+) -> tuple[list[dict], dict[int, dict[str, str]]]:
+    """Gộp BibTeX qua nhiều version và trả map key riêng cho từng version.
+
+    Cùng một citation key có thể trỏ tới hai công trình khác nhau ở hai version; vì
+    ``\\cite{}`` nằm trong văn bản của từng version nên không thể dùng một map toàn
+    cục. Hàm trả ``(entries, {version: {key_cũ: key_chính}})`` để ``rewrite_citations``
+    gọi theo từng version. Key trùng trong cùng một version mà trỏ tới hai công trình
+    khác nhau bị loại khỏi map của version đó (không thể sửa an toàn).
+
+    Args:
+        by_version: Mapping version -> danh sách entry của version đó.
+
+    Returns:
+        ``(deduplicated, version_key_maps)``.
+    """
+    flat = [(version, entry) for version in sorted(by_version) for entry in by_version[version]]
+    normalized = [_normalize_entry(entry, index) for index, (_, entry) in enumerate(flat)]
+    if not normalized:
+        return [], {}
+
+    forest = _UnionFind(len(normalized))
+    doi_index: dict[str, int] = {}
+    title_buckets: dict[str, list[int]] = defaultdict(list)
+
+    for index, entry in enumerate(normalized):
+        doi = _normalize_doi(entry.get("doi"))
+        if doi:
+            if doi in doi_index:
+                forest.union(index, doi_index[doi])
+            else:
+                doi_index[doi] = index
+
+        title = _normalize_title(entry.get("title"))
+        if title:
+            for other_index in title_buckets[title]:
+                if _compatible(entry, normalized[other_index]):
+                    forest.union(index, other_index)
+            title_buckets[title].append(index)
+
+    groups: dict[int, list[int]] = defaultdict(list)
+    group_order: list[int] = []
+    for index in range(len(normalized)):
+        root = forest.find(index)
+        if root not in groups:
+            group_order.append(root)
+        groups[root].append(index)
+
+    deduplicated: list[dict] = []
+    used_keys: list[str] = []
+    canonical_of: dict[int, str] = {}
+
+    for root in group_order:
+        indices = groups[root]
+        merged = copy.deepcopy(normalized[indices[0]])
+        for index in indices[1:]:
+            _merge_entry(merged, normalized[index])
+
+        key = str(merged["citation_key"])
+        if key.casefold() in {used.casefold() for used in used_keys}:
+            key = _unused_key(key, used_keys)
+        merged["citation_key"] = key
+        used_keys.append(key)
+        deduplicated.append(merged)
+        for index in indices:
+            canonical_of[index] = key
+
+    version_maps: dict[int, dict[str, str]] = defaultdict(dict)
+    clashes: dict[int, set[str]] = defaultdict(set)
+    for index, (version, _) in enumerate(flat):
+        old_key = str(normalized[index]["citation_key"])
+        canonical = canonical_of[index]
+        previous = version_maps[version].get(old_key)
+        if previous is not None and previous.casefold() != canonical.casefold():
+            clashes[version].add(old_key.casefold())  # 1 key, 2 bài, cùng version
+        version_maps[version][old_key] = canonical
+
+    return deduplicated, {
+        version: {
+            old_key: canonical
+            for old_key, canonical in mapping.items()
+            if old_key.casefold() not in clashes[version]
+            and old_key.casefold() != canonical.casefold()
+        }
+        for version, mapping in version_maps.items()
+    }
+
+
 # ``\cite``, ``\citep``, ``\citet``, ``\parencite``, ``\nocite``, ...; tối đa 2 optional arg.
 _CITE_RE = re.compile(
     r"\\(?P<command>[A-Za-z]*cite[A-Za-z]*|nocite)(?P<star>\*?)"
@@ -344,21 +459,24 @@ def rewrite_citations(latex: str, citation_key_map: Mapping[str, str]) -> str:
         if not raw_keys.strip():
             return match.group(0)
 
-        rewritten: list[str] = []
+        kept: list[str] = []
+        seen: set[str] = set()
         for part in raw_keys.split(","):
             stripped = part.strip()
             if not stripped:
-                rewritten.append(part)
                 continue
+            new_key = citation_key_map.get(stripped) or casefold_map.get(stripped.casefold()) or stripped
+            if new_key.casefold() in seen:
+                continue
+            seen.add(new_key.casefold())
             leading = part[: len(part) - len(part.lstrip())]
             trailing = part[len(part.rstrip()) :]
-            new_key = citation_key_map.get(stripped) or casefold_map.get(stripped.casefold())
-            rewritten.append(f"{leading}{new_key or stripped}{trailing}")
+            kept.append(f"{leading}{new_key}{trailing}")
 
         command = match.group("command")
         star = match.group("star") or ""
         options = match.group("options") or ""
-        return f"\\{command}{star}{options}{{{','.join(rewritten)}}}"
+        return f"\\{command}{star}{options}{{{','.join(kept)}}}"
 
     return _CITE_RE.sub(replacement, latex)
 
@@ -435,9 +553,8 @@ def _infer_kind(element_id: str, content: str) -> Kind:
 
 
 def _normalize_content(content: str) -> str:
-    """Chuẩn hóa khoảng trắng để so khớp nội dung giữa các version."""
+    content = re.sub(r"\s*(\\(?:begin|end)\{[^{}]*\})\s*", r" \1 ", content)
     return " ".join(content.split())
-
 
 def _dedup_texts(versions: Iterable[str]) -> list[str]:
     """Fallback tương thích API cũ: nhận list văn bản version, trả list duy nhất."""
@@ -626,4 +743,4 @@ def dedup_fulltext(
     return {"elements": new_elements, "hierarchy": new_hierarchy}
 
 
-__all__ = ["dedup_bibtex", "dedup_fulltext", "rewrite_citations"]
+__all__ = ["dedup_bibtex", "dedup_bibtex_versions", "dedup_fulltext", "rewrite_citations"]

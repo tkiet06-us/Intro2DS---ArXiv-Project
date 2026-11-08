@@ -182,7 +182,7 @@ def test_write_bibtex_round_trip(tmp_path):
     assert parse_bib_file(target) == entries
 
 
-def test_format_bibtex_entry_escapes_braces_in_values():
+def test_format_bibtex_entry_strips_braces_from_values():
     text = format_bibtex_entry(
         {
             "citation_key": "x",
@@ -197,7 +197,7 @@ def test_format_bibtex_entry_escapes_braces_in_values():
     )
 
     assert "@misc{x," in text
-    assert r"title = {A \{weird\} title}" in text
+    assert "title = {A weird title}" in text
     assert "year" not in text
 
 
