@@ -385,6 +385,11 @@ def _split_plain(raw: str) -> tuple[str, str, str]:
     parts = re.split(r"(?<![\s.][A-Z])(?<=[a-z0-9\)])\.\s+", raw)
     if len(parts) >= 3:  # "A. Author. Title. Journal, 2020."
         return parts[0], parts[1], " ".join(parts[2:])
+    
+    if len(parts) == 2:  # cắt tại chữ viết tắt cuối cùng của danh sách tác giả
+        m = re.match(r"^(.*\b[A-Z]\.)\s+(\S.*)$", parts[0], re.S)
+        if m:
+            return m[1], m[2], parts[1]
     return "", raw, ""
 
 
@@ -399,7 +404,10 @@ def _parse_entry(citation_key: str, raw_text: str, entry_type: str = "misc") -> 
     journal = _latex_to_text(bibinfo.get("journal", "")) or None
 
     emphasis = _find_emphasis(raw_text)
-    if emphasis is not None:
+    if _APA_RE.match(raw_text):  # APA: chữ nghiêng là venue, không phải title
+        authors_prefix, plain_title, suffix = _split_plain(raw_text)
+        title = _latex_to_text(plain_title) or None
+    elif emphasis is not None:
         inner, start, end = emphasis
         title = _latex_to_text(inner) or None
         authors_prefix = raw_text[:start]

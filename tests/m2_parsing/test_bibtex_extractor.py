@@ -112,6 +112,36 @@ def test_ieee_bibinfo_fields_and_nested_braces():
     assert entry["year"] == 2018
 
 
+def test_apa_bibitem_with_textit_venue_keeps_title_and_authors():
+    """APA ``\\bibitem`` dùng ``\\textit{}`` cho venue: title/authors phải đúng."""
+    latex = r"""
+    \begin{thebibliography}{9}
+    \bibitem{lee2019} Lee, B. (2019). Graph nets. In \textit{NeurIPS}.
+    \end{thebibliography}
+    """
+    entry = extract_bibitems(latex)[0]
+
+    assert entry["title"] == "Graph nets"
+    assert entry["authors"] == ["Lee, B."]
+    assert entry["journal"] == "In NeurIPS"
+    assert entry["year"] == 2019
+
+
+def test_plain_bibitem_with_initials_after_surname_splits_author_list():
+    """``Họ, X., Họ, Y. Title. Venue, năm.`` không được cắt title thành 'A'."""
+    latex = r"""
+    \begin{thebibliography}{9}
+    \bibitem{vaswani2017} Vaswani, A., Shazeer, N. Attention is all you need. NeurIPS, 2017.
+    \end{thebibliography}
+    """
+    entry = extract_bibitems(latex)[0]
+
+    assert entry["title"] == "Attention is all you need"
+    assert entry["authors"] == ["Vaswani, A.", "Shazeer, N."]
+    assert entry["journal"] == "NeurIPS"
+    assert entry["year"] == 2017
+
+
 def test_multiple_bibitems_are_split_at_the_right_boundary():
     latex = r"""
     \begin{thebibliography}{9}

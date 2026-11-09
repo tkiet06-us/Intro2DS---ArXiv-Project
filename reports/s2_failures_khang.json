@@ -1,0 +1,29 @@
+{
+  "n_failures": 6,
+  "failures": [
+    {
+      "arxiv_id": "2411.04415",
+      "status": "not_found"
+    },
+    {
+      "arxiv_id": "2411.05053",
+      "status": "not_found"
+    },
+    {
+      "arxiv_id": "2411.06273",
+      "status": "not_found"
+    },
+    {
+      "arxiv_id": "2411.06431",
+      "status": "not_found"
+    },
+    {
+      "arxiv_id": "2411.06906",
+      "status": "not_found"
+    },
+    {
+      "arxiv_id": "2411.07951",
+      "status": "not_found"
+    }
+  ]
+}

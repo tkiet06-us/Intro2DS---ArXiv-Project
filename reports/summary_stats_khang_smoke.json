@@ -1,0 +1,94 @@
+{
+  "name": "khang_smoke",
+  "generated_utc": "2026-11-06 16:24:11",
+  "interrupted": false,
+  "n_papers": 10,
+  "discovery_seconds": null,
+  "crawl": {
+    "papers": 10,
+    "versions_expected": 15,
+    "versions_logged": 15,
+    "versions_not_attempted": 0,
+    "by_status": {
+      "ok": 14,
+      "empty": 1
+    },
+    "empty_reasons": {
+      "pdf_only": 1
+    },
+    "papers_with_no_tex_at_all": 1,
+    "archive_bytes_downloaded": 32893444,
+    "size_before_bytes": 38039110,
+    "size_after_bytes": 1696895,
+    "size_after_over_before": 0.0446,
+    "seconds_per_version_mean": 5.157,
+    "versions_with_wall_seconds": 15,
+    "wall_seconds_total": 77.8,
+    "wall_seconds_per_version_mean": 5.183,
+    "seconds_per_paper_mean": 7.78,
+    "seconds_per_paper_max": 19.93,
+    "seconds_per_paper": {
+      "2411.03799": 4.65,
+      "2411.03800": 3.51,
+      "2411.03801": 7.11,
+      "2411.03802": 5.91,
+      "2411.03803": 3.56,
+      "2411.03804": 4.83,
+      "2411.03805": 4.03,
+      "2411.03806": 16.83,
+      "2411.03807": 19.93,
+      "2411.03808": 7.39
+    },
+    "elapsed_this_run_s": 78.0,
+    "rss_mb_mean": 71.6,
+    "rss_mb_max_logged": 78.6,
+    "peak_rss_mb": 86.8,
+    "output_dir_bytes": 1706975,
+    "exit_code": 0,
+    "n_versions_from_api": [],
+    "metadata_errors": [],
+    "revised_dates_incomplete": [],
+    "ids_not_in_discovery": null,
+    "ids_not_in_discovery_count": null
+  },
+  "crawl_rates": {
+    "version_ok_rate": 0.9333,
+    "paper_with_tex_rate": 0.9,
+    "avg_size_before_bytes_per_paper": 3803911.0,
+    "avg_size_after_bytes_per_paper": 169689.5
+  },
+  "s2": {
+    "statuses": {
+      "failed": 10
+    },
+    "papers_with_references": 0,
+    "n_refs_total": 0,
+    "n_refs_with_arxiv_id": 0,
+    "avg_refs_per_paper": null,
+    "arxiv_id_rate": null,
+    "paper_success_rate": 0.0
+  },
+  "profile": {
+    "wall_seconds": 78.06966589999956,
+    "n_papers": 10,
+    "avg_seconds_per_paper": 7.841244740000002,
+    "avg_wall_seconds_per_paper": 7.8069665899999565,
+    "peak_ram_mb": 76.98828125,
+    "avg_ram_mb": 69.93773129111842,
+    "n_ram_samples": 152,
+    "n_sample_errors": 0,
+    "max_disk_mb": 1.6278982162475586,
+    "final_disk_mb": 1.6278982162475586,
+    "n_refs_total": 0,
+    "n_refs_co_arxiv_id_total": 0
+  },
+  "pipeline": {
+    "wall_seconds": 78.1,
+    "stage_seconds": {
+      "arxiv": 78.1,
+      "s2": 0.7
+    },
+    "seconds_saved_by_overlap": 0.6,
+    "errors": {}
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "wall_seconds": 78.06966589999956,
+  "n_papers": 10,
+  "avg_seconds_per_paper": 7.841244740000002,
+  "avg_wall_seconds_per_paper": 7.8069665899999565,
+  "peak_ram_mb": 76.98828125,
+  "avg_ram_mb": 69.93773129111842,
+  "n_ram_samples": 152,
+  "n_sample_errors": 0,
+  "max_disk_mb": 1.6278982162475586,
+  "final_disk_mb": 1.6278982162475586,
+  "n_refs_total": 0,
+  "n_refs_co_arxiv_id_total": 0
+}
