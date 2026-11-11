@@ -384,3 +384,88 @@ def test_help_via_subprocess_exits_zero() -> None:
     )
     assert result.returncode == 0
     assert "--stage" in result.stdout
+
+
+def test_skip_discovery_explicit_propagates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--skip_discovery tường minh được chuyển xuống M1 và không cần kaggle_json."""
+    seen: dict[str, object] = {}
+
+    def fake_pipeline(args: object, contact: str, *extra: object) -> int:
+        seen["m1"] = args
+        return run_m1.EXIT_OK
+
+    monkeypatch.setattr(run_m1, "run_pipeline", fake_pipeline)
+
+    argv = [
+        "--stage", "m1",
+        "--id_start", ID_START,
+        "--id_end", ID_END,
+        "--contact", "test@example.com",
+        "--config", str(_config(tmp_path)),
+        "--skip_discovery",
+    ]
+    assert runner.main(argv) == runner.EXIT_OK
+    assert seen["m1"].skip_discovery is True  # type: ignore[attr-defined]
+
+
+def test_auto_detect_existing_discovery_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Tự động nhận diện file discovery_<name>.jsonl đã có -> skip_discovery=True."""
+    seen: dict[str, object] = {}
+
+    def fake_pipeline(args: object, contact: str, *extra: object) -> int:
+        seen["m1"] = args
+        return run_m1.EXIT_OK
+
+    monkeypatch.setattr(run_m1, "run_pipeline", fake_pipeline)
+
+    data_root = tmp_path / "raw"
+    data_root.mkdir()
+    discovery_file = data_root / "discovery_kien.jsonl"
+    discovery_file.write_text('{"arxiv_id": "2506.00788"}\n', encoding="utf-8")
+
+    argv = [
+        "--stage", "m1",
+        "--name", "kien",
+        "--id_start", ID_START,
+        "--id_end", ID_END,
+        "--contact", "test@example.com",
+        "--config", str(_config(tmp_path)),
+        "--data_root", str(data_root),
+    ]
+    assert runner.main(argv) == runner.EXIT_OK
+    assert seen["m1"].skip_discovery is True  # type: ignore[attr-defined]
+
+
+def test_auto_detect_shared_25k_discovery_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Tự động nhận diện discovery_25k.jsonl -> copy sang discovery_<name>.jsonl & skip_discovery=True."""
+    seen: dict[str, object] = {}
+
+    def fake_pipeline(args: object, contact: str, *extra: object) -> int:
+        seen["m1"] = args
+        return run_m1.EXIT_OK
+
+    monkeypatch.setattr(run_m1, "run_pipeline", fake_pipeline)
+
+    data_root = tmp_path / "raw"
+    data_root.mkdir()
+    shared_25k = data_root / "discovery_25k.jsonl"
+    shared_25k.write_text('{"arxiv_id": "2506.00788"}\n', encoding="utf-8")
+
+    argv = [
+        "--stage", "m1",
+        "--name", "bao",
+        "--id_start", ID_START,
+        "--id_end", ID_END,
+        "--contact", "test@example.com",
+        "--config", str(_config(tmp_path)),
+        "--data_root", str(data_root),
+    ]
+    assert runner.main(argv) == runner.EXIT_OK
+    assert seen["m1"].skip_discovery is True  # type: ignore[attr-defined]
+    assert (data_root / "discovery_bao.jsonl").exists()

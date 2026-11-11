@@ -21,6 +21,7 @@ Mã thoát: 0 thành công (kể cả có bài lỗi đã được log), 1 lỗi
 import argparse
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("--processed_root", type=Path, default=Path("data/processed"), help="Thu muc xuat M2")
     add("--reports", type=Path, default=Path("reports"))
     add("--limit", type=int, default=None, help="Chi chay N bai dau (chay thu / benchmark)")
+    add("--skip_discovery", action="store_true", help="Bo qua discovery, dung file discovery_<name>.jsonl co san")
     add("--no_resume", action="store_true", help="Bo checkpoint, chay lai stage dang chay tu dau")
     add("--no_worker", action="store_true", help="M2 xu ly bai ngay trong tien trinh chinh")
     return parser
@@ -115,7 +117,61 @@ def _all_stage_limit(config_path: Path) -> int:
     return limit if limit > 0 else DEFAULT_ALL_STAGE_LIMIT
 
 
-def _m1_argv(args: argparse.Namespace, name: str, limit: int | None) -> list[str]:
+def _should_skip_discovery(args: argparse.Namespace, name: str) -> bool:
+    """Xác định có bỏ qua discovery không (do cờ tường minh hoặc tự động nhận diện file có sẵn)."""
+    if getattr(args, "skip_discovery", False):
+        return True
+    if getattr(args, "no_resume", False):
+        return False
+
+    data_root = Path(args.data_root)
+    expected_path = data_root / f"discovery_{name}.jsonl"
+    if expected_path.is_file() and expected_path.stat().st_size > 0:
+        logger.info(
+            "Tu dong nhan dien: tim thay file discovery '%s' -> bo qua discovery (khong can Kaggle snapshot)",
+            expected_path,
+        )
+        return True
+
+    # Khi chạy chế độ thử 'all' (name có dạng '<name>_sample'), kiểm tra file discovery gốc
+    if name.endswith("_sample"):
+        base_name = name[:-7]
+        base_path = data_root / f"discovery_{base_name}.jsonl"
+        if base_path.is_file() and base_path.stat().st_size > 0:
+            logger.info(
+                "Tu dong nhan dien: tim thay file discovery goc '%s' cho mau '%s' -> tai su dung",
+                base_path,
+                name,
+            )
+            if not expected_path.exists():
+                expected_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(base_path, expected_path)
+            return True
+
+    # Kiểm tra file discovery chung (25k bài của nhóm) nếu có
+    for shared_name in ("discovery_25k.jsonl", "discovery.jsonl"):
+        shared_path = data_root / shared_name
+        if shared_path.is_file() and shared_path.stat().st_size > 0:
+            logger.info(
+                "Tu dong nhan dien: tim thay file discovery chung '%s' -> sao chep sang '%s' cho '%s'",
+                shared_path,
+                expected_path,
+                name,
+            )
+            if not expected_path.exists():
+                expected_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(shared_path, expected_path)
+            return True
+
+    return False
+
+
+def _m1_argv(
+    args: argparse.Namespace,
+    name: str,
+    limit: int | None,
+    skip_discovery: bool = False,
+) -> list[str]:
     """Dựng argv cho ``run_m1.build_parser`` từ tham số của runner."""
     argv = [
         "--name", name,
@@ -135,6 +191,8 @@ def _m1_argv(args: argparse.Namespace, name: str, limit: int | None) -> list[str
         argv += ["--contact", args.contact]
     if args.no_resume:
         argv += ["--fresh_discovery", "--fresh_crawl", "--fresh_s2"]
+    if skip_discovery:
+        argv += ["--skip_discovery"]
     return argv
 
 
@@ -142,7 +200,10 @@ def _run_m1(args: argparse.Namespace, name: str, limit: int | None) -> int:
     """Chạy stage M1 qua adapter; trả mã thoát RIÊNG của ``run_m1`` (được chuẩn hóa sau)."""
     from src.m1_crawling import run_m1
 
-    stage_args = run_m1.build_parser().parse_args(_m1_argv(args, name, limit))
+    skip_discovery = _should_skip_discovery(args, name)
+    stage_args = run_m1.build_parser().parse_args(
+        _m1_argv(args, name, limit, skip_discovery=skip_discovery)
+    )
     contact = args.contact or os.environ.get(run_m1.crawler.CONTACT_ENV)
     problem = run_m1._validate(stage_args, contact)
     if problem:
