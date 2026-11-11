@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import multiprocessing
 import re
 import sys
 import time
@@ -167,9 +168,13 @@ def process_paper_m2(
 ) -> PaperResult:
     """Xử lý một bài ở M2 và ghi ``hierarchy.json`` + ``refs.bib`` vào ``out_dir``.
 
-    Hàm không tự đặt trần thời gian (việc đó do lớp worker ở ``run_m2_stage`` lo) và không
+    Hàm không tự đặt trần thời gian (việc đó do ``PaperWorker`` ở ``run_stage`` lo) và không
     raise vì dữ liệu xấu: mọi lỗi ở từng version được log kèm ``arxiv_id`` rồi ghi vào
     ``PaperResult`` để một bài lỗi không làm sập cả dải.
+
+    Bài lớn được xử lý hai mức: vượt ``max_tex_bytes`` thì chạy chế độ nhẹ (bỏ ``normalize_math``
+    và ``dedup_fulltext``, đặt cờ ``degraded``); vượt ``max_tex_bytes_skip`` thì trả
+    ``skipped_large``. Cây vượt ``max_nodes`` bị cắt và đặt cờ ``truncated``.
 
     Args:
         paper_dir: Thư mục bài do M1 sinh ra (chứa các thư mục version).
@@ -194,7 +199,7 @@ def process_paper_m2(
     texts: dict[int, str] = {}
     for version, version_dir in versions:
         try:
-            text = latex_parser.resolve_paper(version_dir)
+            text = latex_parser.resolve_paper(version_dir, max_depth=settings.max_include_depth)
         except Exception as exc:
             logger.exception("%s v%d: resolver loi", arxiv_id, version)
             result.stage = result.stage or "resolver"
@@ -209,6 +214,16 @@ def process_paper_m2(
             result.reason = "khong co .tex trong moi version"
         result.seconds = time.perf_counter() - started
         return result
+
+    total_bytes = sum(len(text.encode("utf-8")) for text in texts.values())
+    if total_bytes > settings.max_tex_bytes_skip:
+        result.status = STATUS_SKIPPED_LARGE
+        result.reason = f"tong {total_bytes} byte > {settings.max_tex_bytes_skip}"
+        result.seconds = time.perf_counter() - started
+        return result
+    # Chế độ nhẹ: bỏ normalize_math nặng và dedup_fulltext, giữ BibTeX + cây cơ bản.
+    degraded = total_bytes > settings.max_tex_bytes
+    result.degraded = degraded
 
     elements: dict[str, str] = {}
     hierarchy: dict[str, dict[str, str]] = {}
@@ -226,13 +241,18 @@ def process_paper_m2(
             bib_by_version[version] = []
         try:
             cleaned = latex_cleanup.cleanup_latex(text)
-            cleaned = latex_cleanup.normalize_math(cleaned)
+            if not degraded:
+                cleaned = latex_cleanup.normalize_math(cleaned)
             nodes = tree_builder.build_tree(cleaned, version)
         except Exception as exc:
             logger.exception("%s v%d: cleanup/tree loi", arxiv_id, version)
             result.stage = result.stage or "tree"
             result.reason = result.reason or f"v{version}: {exc}"
             continue
+        if len(nodes) > settings.max_nodes:
+            # Cắt đuôi an toàn: duyệt tiền thứ tự nên cha luôn nằm trước con trong danh sách.
+            nodes = nodes[: settings.max_nodes]
+            result.truncated = True
         result.n_versions_done += 1
         result.max_depth = max(result.max_depth, _tree_max_depth(nodes))
         for node in nodes:
@@ -249,12 +269,15 @@ def process_paper_m2(
     result.n_bib_after = len(deduped_bib)
 
     payload = {"elements": elements, "hierarchy": hierarchy}
-    deduped_ft = dedup.dedup_fulltext(payload, key_map or None)
-    result.n_duplicate_nodes_merged = max(len(elements) - len(deduped_ft["elements"]), 0)
+    if degraded:
+        output = payload
+    else:
+        output = dedup.dedup_fulltext(payload, key_map or None)
+        result.n_duplicate_nodes_merged = max(len(elements) - len(output["elements"]), 0)
     result.nodes_by_kind = dict(kinds)
 
     folder = Path(out_dir) / to_folder_name(arxiv_id)
-    write_json(folder / HIERARCHY_NAME, deduped_ft)
+    write_json(folder / HIERARCHY_NAME, output)
     bibtex_extractor.write_bibtex(deduped_bib, folder / BIB_NAME)
 
     result.partial = result.stage is not None or result.n_versions_done < len(versions)
@@ -392,13 +415,17 @@ def _resume_skip(record: dict) -> bool:
     return status in TERMINAL_STATUSES or status == STATUS_FAILED
 
 
-def _result_from_record(record: dict, arxiv_id: str) -> PaperResult:
-    """Dựng lại ``PaperResult`` từ bản ghi checkpoint (bỏ qua khóa lạ/thiếu)."""
-    data = record.get("result") or {}
+def _paper_result(data: dict, arxiv_id: str, fallback_status: str = STATUS_FAILED) -> PaperResult:
+    """Dựng ``PaperResult`` từ dict (bỏ qua khóa lạ/thiếu, giữ giá trị mặc định của dataclass)."""
     known = {item.name: data[item.name] for item in fields(PaperResult) if item.name in data}
     known.setdefault("arxiv_id", arxiv_id)
-    known.setdefault("status", record.get("status", STATUS_FAILED))
+    known.setdefault("status", fallback_status)
     return PaperResult(**known)
+
+
+def _result_from_record(record: dict, arxiv_id: str) -> PaperResult:
+    """Dựng lại ``PaperResult`` từ bản ghi checkpoint (bỏ qua khóa lạ/thiếu)."""
+    return _paper_result(record.get("result") or {}, arxiv_id, record.get("status", STATUS_FAILED))
 
 
 def _checkpoint_record(id_start: str, id_end: str, result: PaperResult) -> dict:
@@ -431,13 +458,141 @@ def _flush_checkpoint(path: Path, records: list[dict]) -> None:
                 return
 
 
+def _worker_loop(conn: Any, settings_dict: dict) -> None:
+    """Tiến trình con: nhận từng bài qua ``conn``, trả ``PaperResult`` dạng dict.
+
+    Hàm ở cấp module để ``multiprocessing`` (context ``spawn``) pickle được. Worker tự cài
+    logging vì tiến trình spawn không thừa hưởng cấu hình logging của tiến trình cha.
+    """
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    settings = M2Settings(**settings_dict)
+    try:
+        while True:
+            task = conn.recv()
+            if task is None:  # lệnh dừng
+                break
+            paper_dir, arxiv_id, out_dir = task
+            try:
+                result = process_paper_m2(Path(paper_dir), arxiv_id, settings, Path(out_dir))
+                payload = result.to_dict()
+            except Exception as exc:
+                # Giữ worker sống: một bài lỗi không được kéo sập tiến trình con.
+                logger.exception("Loi bat ngo khi xu ly %s trong worker", arxiv_id)
+                payload = {
+                    "arxiv_id": arxiv_id,
+                    "status": STATUS_FAILED,
+                    "stage": "process",
+                    "reason": f"{type(exc).__name__}: {str(exc)[:300]}",
+                }
+            conn.send(payload)
+    except EOFError:  # cha đóng pipe (bị ngắt/kill): thoát êm
+        logger.warning("Worker mat ket noi voi tien trinh cha, dung lai.")
+    finally:
+        conn.close()
+
+
+class PaperWorker:
+    """Một tiến trình con bền vững xử lý từng bài, bị hủy khi một bài vượt thời gian.
+
+    Dùng 1 worker cho cả dải (không spawn mỗi bài) để chi phí khởi động không làm sai số đo.
+    Chỉ khi một bài quá ``paper_timeout_s`` mới ``terminate()`` rồi dựng worker mới cho bài kế.
+    """
+
+    def __init__(self, settings: M2Settings, target: Any = _worker_loop) -> None:
+        """Khởi tạo và dựng tiến trình worker đầu tiên.
+
+        Args:
+            settings: Cấu hình M2 truyền cho worker (dạng dict phẳng, picklable).
+            target: Hàm chạy trong worker (để test có thể truyền hàm treo thay thế).
+        """
+        self._settings = settings
+        self._target = target
+        self._context = multiprocessing.get_context("spawn")
+        self._process: Any = None
+        self._conn: Any = None
+        self._start()
+
+    def _start(self) -> None:
+        """Dựng một tiến trình worker mới cùng pipe giao tiếp."""
+        parent_conn, child_conn = self._context.Pipe()
+        self._process = self._context.Process(
+            target=self._target, args=(child_conn, self._settings.model_dump()), daemon=True
+        )
+        self._process.start()
+        child_conn.close()
+        self._conn = parent_conn
+
+    def run(
+        self, paper_dir: Path, arxiv_id: str, out_dir: Path, timeout: float
+    ) -> dict | None:
+        """Gửi một bài cho worker; trả dict kết quả, hoặc ``None`` nếu vượt ``timeout``.
+
+        Khi vượt thời gian, worker bị kill và ``None`` được trả về; lần gọi kế tiếp sẽ tự dựng
+        worker mới.
+        """
+        if self._conn is None:
+            self._start()
+        self._conn.send((str(paper_dir), arxiv_id, str(out_dir)))
+        if self._conn.poll(timeout):
+            return self._conn.recv()
+        logger.error("%s: vuot %.1fs, huy worker", arxiv_id, timeout)
+        self._kill()
+        return None
+
+    def _kill(self) -> None:
+        """Kết thúc tiến trình worker hiện tại (terminate, rồi kill nếu còn sống)."""
+        if self._process is not None:
+            self._process.terminate()
+            self._process.join(timeout=5)
+            if self._process.is_alive():
+                self._process.kill()
+                self._process.join()
+        if self._conn is not None:
+            self._conn.close()
+        self._process = None
+        self._conn = None
+
+    def close(self) -> None:
+        """Dừng worker êm ái; kill nếu không thoát kịp."""
+        if self._process is None:
+            return
+        try:
+            if self._conn is not None:
+                self._conn.send(None)
+                self._process.join(timeout=5)
+        except (OSError, ValueError):
+            logger.warning("Khong gui duoc lenh dung worker, se kill.")
+        if self._process.is_alive():
+            self._kill()
+        else:
+            if self._conn is not None:
+                self._conn.close()
+            self._process = None
+            self._conn = None
+
+
 def _process_one(
-    paper_dir: Path, arxiv_id: str, settings: M2Settings, out_dir: Path
+    worker: PaperWorker | None,
+    paper_dir: Path,
+    arxiv_id: str,
+    settings: M2Settings,
+    out_dir: Path,
 ) -> PaperResult:
     """Xử lý một bài với lưới an toàn cuối: lỗi bất ngờ -> ``failed``, không làm sập dải."""
     started = time.perf_counter()
     try:
-        return process_paper_m2(paper_dir, arxiv_id, settings, out_dir)
+        if worker is None:
+            return process_paper_m2(paper_dir, arxiv_id, settings, out_dir)
+        data = worker.run(paper_dir, arxiv_id, out_dir, settings.paper_timeout_s)
+        if data is None:
+            return PaperResult(
+                arxiv_id=arxiv_id,
+                status=STATUS_TIMEOUT,
+                stage="timeout",
+                reason=f"vuot {settings.paper_timeout_s}s",
+                seconds=time.perf_counter() - started,
+            )
+        return _paper_result(data, arxiv_id)
     except Exception as exc:
         logger.exception("Loi bat ngo khi xu ly %s", arxiv_id)
         return PaperResult(
@@ -462,6 +617,7 @@ def _process_range(
     resumed = 0
     buffer: list[dict] = []
     interrupted = False
+    worker = PaperWorker(settings) if settings.use_worker else None
     try:
         for index, (arxiv_id, paper_dir) in enumerate(papers, start=1):
             previous = done.get(arxiv_id)
@@ -472,7 +628,7 @@ def _process_range(
                     "[%d/%d] %s -> bo qua (da xong tu truoc)", index, len(papers), arxiv_id
                 )
                 continue
-            result = _process_one(paper_dir, arxiv_id, settings, paths.papers_out)
+            result = _process_one(worker, paper_dir, arxiv_id, settings, paths.papers_out)
             results.append(result)
             buffer.append(_checkpoint_record(args.id_start, args.id_end, result))
             logger.info(
@@ -488,6 +644,8 @@ def _process_range(
     finally:
         if buffer:
             _flush_checkpoint(paths.checkpoint, buffer)
+        if worker is not None:
+            worker.close()
     return results, resumed, interrupted
 
 
@@ -517,6 +675,8 @@ def run_stage(args: argparse.Namespace) -> int:
         vào, ``EXIT_INTERRUPTED`` khi người dùng Ctrl+C (checkpoint đã được flush).
     """
     settings = M2Settings.from_config(args.config)
+    if getattr(args, "no_worker", False):
+        settings = settings.model_copy(update={"use_worker": False})
     paths = M2Paths.build(args.name, args.data_root, args.processed_root, args.reports)
     if not paths.papers_in.is_dir():
         logger.error("Khong thay thu muc bai M1: %s", paths.papers_in)
@@ -560,6 +720,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("--limit", type=int, default=None, help="Chi xu ly N bai dau (chay thu)")
     add("--checkpoint_every", type=int, default=None, help="Ghi checkpoint sau moi K bai")
     add("--no_resume", action="store_true", help="Bo checkpoint, chay lai tu dau")
+    add("--no_worker", action="store_true", help="Xu ly bai ngay trong tien trinh chinh (bo timeout)")
     return parser
 
 
@@ -600,6 +761,7 @@ __all__ = [
     "M2Paths",
     "M2Settings",
     "PaperResult",
+    "PaperWorker",
     "build_parser",
     "id_range_key",
     "list_papers_in_range",
