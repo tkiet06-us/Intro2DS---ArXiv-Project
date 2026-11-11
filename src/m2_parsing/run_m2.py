@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from src.common.ids import from_folder_name, to_folder_name, validate_arxiv_id
 from src.common.utils_io import append_jsonl, iter_jsonl, write_json
+from src.m1_crawling.profiler import Profiler
 from src.m2_parsing import (
     bibtex_extractor,
     dedup,
@@ -58,6 +59,9 @@ TERMINAL_STATUSES = frozenset({STATUS_OK, STATUS_EMPTY, STATUS_SKIPPED_LARGE, ST
 HIERARCHY_NAME = "hierarchy.json"
 BIB_NAME = "refs.bib"
 DEFAULT_CONFIG_PATH = Path("configs/config.yaml")
+
+# Thứ tự kind trong summary cho khớp schema (schemas.Kind).
+NODE_KINDS = ("document", "heading", "itemize", "item", "sentence", "formula", "figure")
 
 # Mã thoát của CLI (khớp quy ước main.py: 0 xong, 1 lỗi tham số/dữ liệu, 130 khi Ctrl+C).
 EXIT_OK = 0
@@ -604,20 +608,31 @@ def _process_one(
         )
 
 
+@dataclass
+class _RangeContext:
+    """Tham số cố định dùng chung cho cả vòng lặp xử lý một dải bài M2."""
+
+    paths: M2Paths
+    settings: M2Settings
+    id_start: str
+    id_end: str
+    checkpoint_every: int
+    profiler: Profiler | None
+
+
 def _process_range(
-    paths: M2Paths,
-    args: argparse.Namespace,
-    settings: M2Settings,
-    papers: list[tuple[str, Path]],
-    done: dict[str, dict],
+    context: _RangeContext, papers: list[tuple[str, Path]], done: dict[str, dict]
 ) -> tuple[list[PaperResult], int, bool]:
-    """Xử lý lần lượt các bài, ghi checkpoint; trả ``(kết quả, số bài resume, bị ngắt)``."""
-    checkpoint_every = max(_checkpoint_every(args), 1)
+    """Xử lý lần lượt các bài, ghi checkpoint; trả ``(kết quả, số bài resume, bị ngắt)``.
+
+    Chỉ ghi số đo thời gian cho bài THỰC SỰ chạy ở lần này (bài bỏ qua nhờ checkpoint không được
+    tính) để ``avg_seconds_per_paper`` không bị kéo lệch.
+    """
     results: list[PaperResult] = []
     resumed = 0
     buffer: list[dict] = []
     interrupted = False
-    worker = PaperWorker(settings) if settings.use_worker else None
+    worker = PaperWorker(context.settings) if context.settings.use_worker else None
     try:
         for index, (arxiv_id, paper_dir) in enumerate(papers, start=1):
             previous = done.get(arxiv_id)
@@ -628,22 +643,26 @@ def _process_range(
                     "[%d/%d] %s -> bo qua (da xong tu truoc)", index, len(papers), arxiv_id
                 )
                 continue
-            result = _process_one(worker, paper_dir, arxiv_id, settings, paths.papers_out)
+            result = _process_one(
+                worker, paper_dir, arxiv_id, context.settings, context.paths.papers_out
+            )
             results.append(result)
-            buffer.append(_checkpoint_record(args.id_start, args.id_end, result))
+            if context.profiler is not None:
+                context.profiler.record_paper(arxiv_id, result.seconds)
+            buffer.append(_checkpoint_record(context.id_start, context.id_end, result))
             logger.info(
                 "[%d/%d] %s -> %s (%.1fs)",
                 index, len(papers), arxiv_id, result.status, result.seconds,
             )
-            if len(buffer) >= checkpoint_every:
-                _flush_checkpoint(paths.checkpoint, buffer)
+            if len(buffer) >= context.checkpoint_every:
+                _flush_checkpoint(context.paths.checkpoint, buffer)
                 buffer.clear()
     except KeyboardInterrupt:
         interrupted = True
         logger.warning("Da dung theo yeu cau; checkpoint da duoc ghi.")
     finally:
         if buffer:
-            _flush_checkpoint(paths.checkpoint, buffer)
+            _flush_checkpoint(context.paths.checkpoint, buffer)
         if worker is not None:
             worker.close()
     return results, resumed, interrupted
@@ -664,15 +683,93 @@ def _checkpoint_every(args: argparse.Namespace) -> int:
         return 1
 
 
+def _ratio(num: float, den: float) -> float | None:
+    """Tỉ số làm tròn 4 chữ số, hoặc ``None`` khi mẫu số bằng 0 (khớp cách M1 làm)."""
+    return round(num / den, 4) if den else None
+
+
+def build_summary(
+    args: argparse.Namespace,
+    settings: M2Settings,
+    results: list[PaperResult],
+    resumed: int,
+    profile: dict,
+) -> dict:
+    """Gộp số đo ``Profiler`` (chỉ lần chạy này) với số liệu M2 (gộp cả bài đã xong trước đó).
+
+    Bỏ hai khóa ``n_refs_total``/``n_refs_co_arxiv_id_total`` của M1 (không có nghĩa ở M2) và
+    ghép khối chỉ số M2. ``success_rate`` là tỉ lệ bài xử lý xong không lỗi (``ok`` hoặc
+    ``empty_record``); ``bib_dedup_ratio`` là tỉ lệ mục BibTeX bị gộp bỏ.
+
+    Args:
+        args: Namespace CLI (dùng ``id_start``/``id_end``).
+        settings: Cấu hình M2 (dùng ``failures_max``).
+        results: Kết quả mọi bài trong dải (kể cả bài bỏ qua nhờ checkpoint).
+        resumed: Số bài bỏ qua nhờ checkpoint.
+        profile: ``Profiler.summary().model_dump(mode="json")``.
+
+    Returns:
+        Dict phẳng JSON-hóa được cho ``summary_stats_m2_<name>.json``.
+    """
+    base = {
+        key: value
+        for key, value in profile.items()
+        if key not in ("n_refs_total", "n_refs_co_arxiv_id_total")
+    }
+    statuses = Counter(result.status for result in results)
+    n_total = len(results)
+    n_ok = statuses.get(STATUS_OK, 0)
+    n_empty = statuses.get(STATUS_EMPTY, 0)
+    n_failed = statuses.get(STATUS_FAILED, 0)
+    n_skipped = statuses.get(STATUS_SKIPPED_LARGE, 0)
+    n_timeout = statuses.get(STATUS_TIMEOUT, 0)
+    kinds: Counter[str] = Counter()
+    for result in results:
+        kinds.update(result.nodes_by_kind)
+    n_bib_before = sum(result.n_bib_before for result in results)
+    n_bib_after = sum(result.n_bib_after for result in results)
+    failures = [
+        {"arxiv_id": result.arxiv_id, "stage": result.stage, "reason": result.reason}
+        for result in results
+        if result.status == STATUS_FAILED
+    ][: settings.failures_max]
+    m2_block = {
+        "id_start": args.id_start,
+        "id_end": args.id_end,
+        "n_papers_total": n_total,
+        "n_ok": n_ok,
+        "n_empty_record": n_empty,
+        "n_failed": n_failed,
+        "n_skipped_large": n_skipped,
+        "n_timeout": n_timeout,
+        "n_degraded": sum(1 for result in results if result.degraded),
+        "success_rate": _ratio(n_ok + n_empty, n_total),
+        "avg_versions_per_paper": _ratio(
+            sum(result.n_versions for result in results), n_total
+        ),
+        "nodes_by_kind": {kind: kinds.get(kind, 0) for kind in NODE_KINDS},
+        "avg_tree_depth": _ratio(sum(result.max_depth for result in results), n_total),
+        "max_tree_depth": max((result.max_depth for result in results), default=0),
+        "n_bib_entries_before_dedup": n_bib_before,
+        "n_bib_entries_after_dedup": n_bib_after,
+        "bib_dedup_ratio": _ratio(n_bib_before - n_bib_after, n_bib_before),
+        "n_duplicate_nodes_merged": sum(result.n_duplicate_nodes_merged for result in results),
+        "n_papers_resumed_skipped": resumed,
+        "is_resumed_run": resumed > 0,
+        "failures": failures,
+    }
+    return {**base, **m2_block}
+
+
 def run_stage(args: argparse.Namespace) -> int:
-    """Chạy M2 trên dải bài M1 đã tải, có checkpoint/resume.
+    """Chạy M2 trên dải bài M1 đã tải, có checkpoint/resume, và xuất ``summary_stats_m2``.
 
     Args:
         args: Namespace từ ``build_parser`` (hoặc do ``main.py`` dựng với các trường tương ứng).
 
     Returns:
         ``EXIT_OK`` khi xong (kể cả có bài lỗi đã log), ``EXIT_BAD_INPUT`` khi thiếu dữ liệu đầu
-        vào, ``EXIT_INTERRUPTED`` khi người dùng Ctrl+C (checkpoint đã được flush).
+        vào, ``EXIT_INTERRUPTED`` khi người dùng Ctrl+C (checkpoint + summary đã được flush).
     """
     settings = M2Settings.from_config(args.config)
     if getattr(args, "no_worker", False):
@@ -693,8 +790,25 @@ def run_stage(args: argparse.Namespace) -> int:
         paths.checkpoint.unlink(missing_ok=True)
     done = load_checkpoint(paths.checkpoint, args.id_start, args.id_end)
     logger.info("M2: %d bai trong dai, %d da xong tu truoc", len(papers), len(done))
-    results, resumed, interrupted = _process_range(paths, args, settings, papers, done)
-    logger.info("M2 xong %d bai (bo qua %d nho checkpoint)", len(results), resumed)
+    with Profiler(
+        watch_dir=paths.papers_out,
+        interval=settings.profiler_interval_s,
+        disk_every=settings.profiler_disk_every,
+    ) as profiler:
+        context = _RangeContext(
+            paths=paths,
+            settings=settings,
+            id_start=args.id_start,
+            id_end=args.id_end,
+            checkpoint_every=max(_checkpoint_every(args), 1),
+            profiler=profiler,
+        )
+        results, resumed, interrupted = _process_range(context, papers, done)
+    # summary() phải gọi SAU khối with để wall_seconds và final_disk_mb đã được chốt ở __exit__.
+    profile = profiler.summary().model_dump(mode="json")
+    summary = build_summary(args, settings, results, resumed, profile)
+    write_json(paths.summary, summary)
+    logger.info("M2 xong %d bai (bo qua %d nho checkpoint) -> %s", len(results), resumed, paths.summary)
     return EXIT_INTERRUPTED if interrupted else EXIT_OK
 
 
@@ -763,6 +877,7 @@ __all__ = [
     "PaperResult",
     "PaperWorker",
     "build_parser",
+    "build_summary",
     "id_range_key",
     "list_papers_in_range",
     "list_version_dirs",
