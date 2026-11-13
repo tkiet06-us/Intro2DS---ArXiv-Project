@@ -15,7 +15,14 @@ Nguyên tắc:
 - ``--stage all`` (mặc định) chỉ để chạy thử vài bài đầu (``pipeline.all_stage_limit``); nó dùng
   tên ``<name>_sample`` nên KHÔNG ghi đè số liệu benchmark thật.
 
-Mã thoát: 0 thành công (kể cả có bài lỗi đã được log), 1 lỗi cấu hình/đối số/stage, 130 khi Ctrl+C.
+Mã thoát:
+
+- ``--stage m2``: 0 thành công (kể cả có bài lỗi đã được log), 1 lỗi cấu hình/đối số/stage,
+  130 khi Ctrl+C.
+- ``--stage m1``: trả NGUYÊN mã của ``run_m1`` (0 xong, 1 còn lỗi tạm thời, 2 sai tham số/dữ
+  liệu, 3 bị arXiv chặn, 4 quá nhiều lỗi liên tiếp, 5 đầy đĩa, 6 discovery thất bại; 130 khi
+  Ctrl+C) để bảng xử lý sự cố của P3-02a còn dùng được.
+- ``--stage all``: 0 xong, 1 có stage lỗi, 130 khi Ctrl+C (M1 lỗi nặng thì dừng trước khi chạy M2).
 """
 
 import argparse
@@ -71,7 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
     add("--limit", type=int, default=None, help="Chi chay N bai dau (chay thu / benchmark)")
     add("--skip_discovery", action="store_true", help="Bo qua discovery, dung file discovery_<name>.jsonl co san")
     add("--no_resume", action="store_true", help="Bo checkpoint, chay lai stage dang chay tu dau")
+    add("--retry_failed", action="store_true", help="M2: khi resume, thu lai cac bai status failed")
     add("--no_worker", action="store_true", help="M2 xu ly bai ngay trong tien trinh chinh")
+    # Các cờ hay dùng của M1 (hướng dẫn P3-02a) được chuyển tiếp nguyên vẹn xuống run_m1.
+    add("--delay", type=float, default=None, help="M1: giay giua 2 request arXiv (>=3)")
+    add("--max_disk_gb", type=float, default=None, help="M1: dung khi output vuot nguong (GB)")
+    add("--max_consecutive_errors", type=int, default=None, help="M1: so loi lien tiep truoc khi dung")
+    add("--s2_batch", type=int, default=None, help="M1: so bai moi lo POST /paper/batch cua S2")
+    add("--skip_crawl", action="store_true", help="M1: khong tai arXiv")
+    add("--skip_s2", action="store_true", help="M1: khong goi Semantic Scholar")
     return parser
 
 
@@ -121,8 +136,8 @@ def _should_skip_discovery(args: argparse.Namespace, name: str) -> bool:
     """Xác định có bỏ qua discovery không (do cờ tường minh hoặc tự động nhận diện file có sẵn)."""
     if getattr(args, "skip_discovery", False):
         return True
-    if getattr(args, "no_resume", False):
-        return False
+    # ``--no_resume`` chỉ có nghĩa chạy lại crawl/S2, KHÔNG bắt M1 làm lại discovery: nếu file
+    # discovery đã có thì vẫn tái sử dụng, nhờ vậy không cần snapshot Kaggle.
 
     data_root = Path(args.data_root)
     expected_path = data_root / f"discovery_{name}.jsonl"
@@ -189,6 +204,18 @@ def _m1_argv(
         argv += ["--limit", str(limit)]
     if args.contact:
         argv += ["--contact", args.contact]
+    if getattr(args, "delay", None) is not None:
+        argv += ["--delay", str(args.delay)]
+    if getattr(args, "max_disk_gb", None) is not None:
+        argv += ["--max_disk_gb", str(args.max_disk_gb)]
+    if getattr(args, "max_consecutive_errors", None) is not None:
+        argv += ["--max_consecutive_errors", str(args.max_consecutive_errors)]
+    if getattr(args, "s2_batch", None) is not None:
+        argv += ["--s2_batch", str(args.s2_batch)]
+    if getattr(args, "skip_crawl", False):
+        argv += ["--skip_crawl"]
+    if getattr(args, "skip_s2", False):
+        argv += ["--skip_s2"]
     if args.no_resume:
         argv += ["--fresh_discovery", "--fresh_crawl", "--fresh_s2"]
     if skip_discovery:
@@ -197,7 +224,7 @@ def _m1_argv(
 
 
 def _run_m1(args: argparse.Namespace, name: str, limit: int | None) -> int:
-    """Chạy stage M1 qua adapter; trả mã thoát RIÊNG của ``run_m1`` (được chuẩn hóa sau)."""
+    """Chạy stage M1 qua adapter; trả mã thoát RIÊNG của ``run_m1`` (``--stage m1`` giữ nguyên)."""
     from src.m1_crawling import run_m1
 
     skip_discovery = _should_skip_discovery(args, name)
@@ -237,6 +264,8 @@ def _m2_argv(args: argparse.Namespace, name: str, limit: int | None) -> list[str
         argv += ["--limit", str(limit)]
     if args.no_resume:
         argv += ["--no_resume"]
+    if getattr(args, "retry_failed", False):
+        argv += ["--retry_failed"]
     if args.no_worker:
         argv += ["--no_worker"]
     return argv
@@ -255,16 +284,21 @@ def _run_m2(args: argparse.Namespace, name: str, limit: int | None) -> int:
 
 
 def _normalize(code: int) -> int:
-    """Chuẩn hóa mã thoát của stage về quy ước runner (0 / 1 / 130)."""
+    """Chuẩn hóa mã thoát của stage về quy ước runner (0 / 1 / 130).
+
+    Chỉ dùng cho ``--stage m2``/``all``; riêng ``--stage m1`` trả nguyên mã của ``run_m1`` để
+    bảng xử lý sự cố P3-02a (3 = bị chặn, 4 = quá nhiều lỗi, 5 = đầy đĩa) còn tác dụng.
+    """
     if code == EXIT_INTERRUPTED:
         return EXIT_INTERRUPTED
     return EXIT_OK if code == EXIT_OK else EXIT_BAD_INPUT
 
 
 def _dispatch(args: argparse.Namespace) -> int:
-    """Điều phối stage theo ``--stage`` và trả mã thoát theo quy ước runner."""
+    """Điều phối stage theo ``--stage`` và trả mã thoát tương ứng."""
     if args.stage == "m1":
-        return _normalize(_run_m1(args, args.name, args.limit))
+        # Giữ nguyên mã của run_m1 (0..6); mã 1 là "còn lỗi tạm thời", không phải lỗi tham số.
+        return _run_m1(args, args.name, args.limit)
     if args.stage == "m2":
         return _normalize(_run_m2(args, args.name, args.limit))
 

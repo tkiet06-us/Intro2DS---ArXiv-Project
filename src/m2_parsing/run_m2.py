@@ -22,6 +22,7 @@ import argparse
 import logging
 import multiprocessing
 import re
+import signal
 import sys
 import time
 from collections import Counter
@@ -153,6 +154,20 @@ def list_version_dirs(paper_dir: Path) -> list[tuple[int, Path]]:
     return versions
 
 
+def _output_folder(out_dir: Path, arxiv_id: str) -> Path:
+    """Thư mục đầu ra của một bài (dùng chung cho lúc ghi và lúc dọn kết quả cũ)."""
+    return Path(out_dir) / to_folder_name(arxiv_id)
+
+
+def _discard_outputs(folder: Path) -> None:
+    """Xóa ``hierarchy.json``/``refs.bib`` cũ của bài để lần lỗi không để lại output giả hợp lệ."""
+    for name in (HIERARCHY_NAME, BIB_NAME):
+        try:
+            (folder / name).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Khong xoa duoc output cu: %s", Path(folder) / name)
+
+
 def _tree_max_depth(nodes: list[ParsedNode]) -> int:
     """Tính độ sâu lớn nhất của cây (nút gốc sâu 0).
 
@@ -180,6 +195,9 @@ def process_paper_m2(
     và ``dedup_fulltext``, đặt cờ ``degraded``); vượt ``max_tex_bytes_skip`` thì trả
     ``skipped_large``. Cây vượt ``max_nodes`` bị cắt và đặt cờ ``truncated``.
 
+    Chỉ ghi ``hierarchy.json``/``refs.bib`` khi có ít nhất một version dựng được cây. Bài
+    ``failed``/``empty_record``/``skipped_large`` không để lại output cũ (nếu có) trong thư mục.
+
     Args:
         paper_dir: Thư mục bài do M1 sinh ra (chứa các thư mục version).
         arxiv_id: Mã arXiv chuẩn của bài.
@@ -195,6 +213,7 @@ def process_paper_m2(
     if not versions:
         result.status = STATUS_EMPTY
         result.reason = "khong co thu muc version"
+        _discard_outputs(_output_folder(out_dir, arxiv_id))
         result.seconds = time.perf_counter() - started
         return result
     result.n_versions = len(versions)
@@ -216,6 +235,7 @@ def process_paper_m2(
         result.status = STATUS_FAILED if result.stage else STATUS_EMPTY
         if not result.stage:
             result.reason = "khong co .tex trong moi version"
+        _discard_outputs(_output_folder(out_dir, arxiv_id))
         result.seconds = time.perf_counter() - started
         return result
 
@@ -223,6 +243,7 @@ def process_paper_m2(
     if total_bytes > settings.max_tex_bytes_skip:
         result.status = STATUS_SKIPPED_LARGE
         result.reason = f"tong {total_bytes} byte > {settings.max_tex_bytes_skip}"
+        _discard_outputs(_output_folder(out_dir, arxiv_id))
         result.seconds = time.perf_counter() - started
         return result
     # Chế độ nhẹ: bỏ normalize_math nặng và dedup_fulltext, giữ BibTeX + cây cơ bản.
@@ -267,6 +288,17 @@ def process_paper_m2(
                 parent_id = make_element_id(arxiv_id, node.parent)
                 hierarchy.setdefault(str(version), {})[element_id] = parent_id
 
+    result.partial = result.stage is not None or result.n_versions_done < len(versions)
+    if result.n_versions_done == 0:
+        # Không version nào dựng được cây: không ghi hierarchy.json/refs.bib rỗng (trông như
+        # hợp lệ) và dọn luôn output của lần chạy trước nếu có.
+        result.status = STATUS_FAILED if result.stage else STATUS_EMPTY
+        if not result.stage:
+            result.reason = result.reason or "khong version nao dung duoc cay"
+        _discard_outputs(_output_folder(out_dir, arxiv_id))
+        result.seconds = time.perf_counter() - started
+        return result
+
     all_bib = [entry for version in sorted(bib_by_version) for entry in bib_by_version[version]]
     result.n_bib_before = len(all_bib)
     deduped_bib, key_map = dedup.dedup_bibtex(all_bib)
@@ -280,13 +312,10 @@ def process_paper_m2(
         result.n_duplicate_nodes_merged = max(len(elements) - len(output["elements"]), 0)
     result.nodes_by_kind = dict(kinds)
 
-    folder = Path(out_dir) / to_folder_name(arxiv_id)
+    folder = _output_folder(out_dir, arxiv_id)
     write_json(folder / HIERARCHY_NAME, output)
     bibtex_extractor.write_bibtex(deduped_bib, folder / BIB_NAME)
 
-    result.partial = result.stage is not None or result.n_versions_done < len(versions)
-    if result.n_versions_done == 0:
-        result.status = STATUS_FAILED if result.stage else STATUS_EMPTY
     result.seconds = time.perf_counter() - started
     return result
 
@@ -409,13 +438,15 @@ def load_checkpoint(path: Path, id_start: str, id_end: str) -> dict[str, dict]:
     return state
 
 
-def _resume_skip(record: dict) -> bool:
+def _resume_skip(record: dict, retry_failed: bool = False) -> bool:
     """True nếu checkpoint cho thấy bài đã "quyết định xong" (không thử lại khi resume).
 
-    Gồm cả ``failed``: mặc định không thử lại để số đo benchmark ổn định; muốn thử lại thì chạy
-    với ``--no_resume``.
+    Gồm cả ``failed``: mặc định không thử lại để số đo benchmark ổn định. Bật ``retry_failed``
+    (cờ ``--retry_failed``) để chỉ chạy lại các bài ``failed`` mà không phải bỏ cả checkpoint.
     """
     status = record.get("status")
+    if retry_failed and status == STATUS_FAILED:
+        return False
     return status in TERMINAL_STATUSES or status == STATUS_FAILED
 
 
@@ -459,7 +490,7 @@ def _flush_checkpoint(path: Path, records: list[dict]) -> None:
                 append_jsonl(path, record)
             except OSError:
                 logger.error("Van khong ghi duoc checkpoint %s; ket qua van giu trong RAM", path)
-                return
+                continue
 
 
 def _worker_loop(conn: Any, settings_dict: dict) -> None:
@@ -468,6 +499,8 @@ def _worker_loop(conn: Any, settings_dict: dict) -> None:
     Hàm ở cấp module để ``multiprocessing`` (context ``spawn``) pickle được. Worker tự cài
     logging vì tiến trình spawn không thừa hưởng cấu hình logging của tiến trình cha.
     """
+    # Ctrl+C do tiến trình cha điều khiển; worker bỏ qua để không in traceback trùng.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     settings = M2Settings(**settings_dict)
     try:
@@ -531,14 +564,26 @@ class PaperWorker:
     ) -> dict | None:
         """Gửi một bài cho worker; trả dict kết quả, hoặc ``None`` nếu vượt ``timeout``.
 
-        Khi vượt thời gian, worker bị kill và ``None`` được trả về; lần gọi kế tiếp sẽ tự dựng
-        worker mới.
+        Worker chết giữa chừng (OOM-kill, crash) được phát hiện qua ``is_alive``/``EOFError``;
+        bài gây chết được trả ``failed`` (stage ``worker``) và worker được dựng lại cho bài kế
+        tiếp, thay vì để ``BrokenPipeError`` biến mọi bài sau thành ``failed`` vĩnh viễn.
         """
-        if self._conn is None:
+        if self._conn is None or self._process is None or not self._process.is_alive():
+            self._kill()
             self._start()
-        self._conn.send((str(paper_dir), arxiv_id, str(out_dir)))
-        if self._conn.poll(timeout):
-            return self._conn.recv()
+        try:
+            self._conn.send((str(paper_dir), arxiv_id, str(out_dir)))
+            if self._conn.poll(timeout):
+                return self._conn.recv()
+        except (EOFError, OSError):
+            logger.error("%s: worker chet giua chung", arxiv_id)
+            self._kill()
+            return {
+                "arxiv_id": arxiv_id,
+                "status": STATUS_FAILED,
+                "stage": "worker",
+                "reason": "worker crash",
+            }
         logger.error("%s: vuot %.1fs, huy worker", arxiv_id, timeout)
         self._kill()
         return None
@@ -618,6 +663,7 @@ class _RangeContext:
     id_end: str
     checkpoint_every: int
     profiler: Profiler | None
+    retry_failed: bool = False
 
 
 def _process_range(
@@ -636,7 +682,7 @@ def _process_range(
     try:
         for index, (arxiv_id, paper_dir) in enumerate(papers, start=1):
             previous = done.get(arxiv_id)
-            if previous and _resume_skip(previous):
+            if previous and _resume_skip(previous, context.retry_failed):
                 resumed += 1
                 results.append(_result_from_record(previous, arxiv_id))
                 logger.info(
@@ -699,7 +745,10 @@ def build_summary(
 
     Bỏ hai khóa ``n_refs_total``/``n_refs_co_arxiv_id_total`` của M1 (không có nghĩa ở M2) và
     ghép khối chỉ số M2. ``success_rate`` là tỉ lệ bài xử lý xong không lỗi (``ok`` hoặc
-    ``empty_record``); ``bib_dedup_ratio`` là tỉ lệ mục BibTeX bị gộp bỏ.
+    ``empty_record``); ``bib_dedup_ratio`` là tỉ lệ mục BibTeX bị gộp bỏ. ``avg_versions_per_paper``
+    và ``avg_tree_depth`` chỉ chia cho số bài dựng được cây (``n_papers_with_tree``); bài lỗi
+    một phần/bị cắt cây được đếm riêng ở ``n_partial``/``n_truncated``, còn ``n_timeout`` luôn
+    có mặt để các thành viên so sánh (timeout phụ thuộc tốc độ máy).
 
     Args:
         args: Namespace CLI (dùng ``id_start``/``id_end``).
@@ -723,6 +772,12 @@ def build_summary(
     n_failed = statuses.get(STATUS_FAILED, 0)
     n_skipped = statuses.get(STATUS_SKIPPED_LARGE, 0)
     n_timeout = statuses.get(STATUS_TIMEOUT, 0)
+    n_partial = sum(1 for result in results if result.partial)
+    n_truncated = sum(1 for result in results if result.truncated)
+    # Chỉ bài dựng được cây mới có độ sâu/số version có nghĩa; chia cho cả bài
+    # empty_record/failed/skipped sẽ kéo các trung bình này xuống.
+    with_tree = [result for result in results if result.n_versions_done > 0]
+    n_with_tree = len(with_tree)
     kinds: Counter[str] = Counter()
     for result in results:
         kinds.update(result.nodes_by_kind)
@@ -743,12 +798,15 @@ def build_summary(
         "n_skipped_large": n_skipped,
         "n_timeout": n_timeout,
         "n_degraded": sum(1 for result in results if result.degraded),
+        "n_partial": n_partial,
+        "n_truncated": n_truncated,
+        "n_papers_with_tree": n_with_tree,
         "success_rate": _ratio(n_ok + n_empty, n_total),
         "avg_versions_per_paper": _ratio(
-            sum(result.n_versions for result in results), n_total
+            sum(result.n_versions for result in with_tree), n_with_tree
         ),
         "nodes_by_kind": {kind: kinds.get(kind, 0) for kind in NODE_KINDS},
-        "avg_tree_depth": _ratio(sum(result.max_depth for result in results), n_total),
+        "avg_tree_depth": _ratio(sum(result.max_depth for result in with_tree), n_with_tree),
         "max_tree_depth": max((result.max_depth for result in results), default=0),
         "n_bib_entries_before_dedup": n_bib_before,
         "n_bib_entries_after_dedup": n_bib_after,
@@ -802,6 +860,7 @@ def run_stage(args: argparse.Namespace) -> int:
             id_end=args.id_end,
             checkpoint_every=max(_checkpoint_every(args), 1),
             profiler=profiler,
+            retry_failed=getattr(args, "retry_failed", False),
         )
         results, resumed, interrupted = _process_range(context, papers, done)
     # summary() phải gọi SAU khối with để wall_seconds và final_disk_mb đã được chốt ở __exit__.
@@ -834,6 +893,11 @@ def build_parser() -> argparse.ArgumentParser:
     add("--limit", type=int, default=None, help="Chi xu ly N bai dau (chay thu)")
     add("--checkpoint_every", type=int, default=None, help="Ghi checkpoint sau moi K bai")
     add("--no_resume", action="store_true", help="Bo checkpoint, chay lai tu dau")
+    add(
+        "--retry_failed",
+        action="store_true",
+        help="Khi resume, thu lai cac bai status failed (mac dinh bo qua)",
+    )
     add("--no_worker", action="store_true", help="Xu ly bai ngay trong tien trinh chinh (bo timeout)")
     return parser
 

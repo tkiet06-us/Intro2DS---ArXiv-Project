@@ -5,6 +5,7 @@ bài lỗi/rỗng/lớn, thứ tự Cleanup -> Dedup, worker timeout + dựng l�
 """
 
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -57,6 +58,7 @@ def _args(tmp_path: Path, config: Path, **overrides) -> SimpleNamespace:
         "limit": None,
         "checkpoint_every": 1,
         "no_resume": False,
+        "retry_failed": False,
         "no_worker": True,
     }
     values.update(overrides)
@@ -92,6 +94,21 @@ def _hanging_worker(conn, _settings_dict) -> None:
         _paper_dir, arxiv_id, _out_dir = task
         if "hang" in arxiv_id:
             time.sleep(30)
+        conn.send({"arxiv_id": arxiv_id, "status": run_m2.STATUS_OK})
+
+
+def _crashing_worker(conn, _settings_dict) -> None:
+    """Worker giả cho test crash: ``arxiv_id`` chứa ``die`` thì ``os._exit(1)``, còn lại trả ngay.
+
+    Ở cấp module để tiến trình con (spawn) pickle được theo tên.
+    """
+    while True:
+        task = conn.recv()
+        if task is None:
+            return
+        _paper_dir, arxiv_id, _out_dir = task
+        if "die" in arxiv_id:
+            os._exit(1)
         conn.send({"arxiv_id": arxiv_id, "status": run_m2.STATUS_OK})
 
 
@@ -230,6 +247,35 @@ def test_process_paper_skipped_when_too_large(tmp_path):
     assert result.status == run_m2.STATUS_SKIPPED_LARGE
 
 
+def test_process_paper_failed_does_not_write_outputs(tmp_path, monkeypatch):
+    papers = _copy_papers(tmp_path / "raw", ["2310-12345"])
+    paper = papers / "2310-12345"
+    out = tmp_path / "out"
+
+    # Lần đầu thành công: có output hợp lệ.
+    assert run_m2.process_paper_m2(paper, "2310.12345", _settings(), out).status == run_m2.STATUS_OK
+    folder = out / "2310-12345"
+    assert (folder / "hierarchy.json").exists()
+
+    # Lần sau lỗi: không được ghi hierarchy rỗng và phải dọn output cũ.
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tree_builder, "build_tree", boom)
+    failed = run_m2.process_paper_m2(paper, "2310.12345", _settings(), out)
+    assert failed.status == run_m2.STATUS_FAILED
+    assert not (folder / "hierarchy.json").exists()
+    assert not (folder / "refs.bib").exists()
+
+
+def test_process_paper_empty_record_writes_nothing(tmp_path):
+    papers = _copy_papers(tmp_path / "raw", ["2402-99999"])
+    out = tmp_path / "out"
+    result = run_m2.process_paper_m2(papers / "2402-99999", "2402.99999", _settings(), out)
+    assert result.status == run_m2.STATUS_EMPTY
+    assert not (out / "2402-99999" / "hierarchy.json").exists()
+
+
 def test_process_paper_truncates_tree_over_max_nodes(tmp_path):
     papers = _copy_papers(tmp_path / "raw", ["2310-12345"])
     result = run_m2.process_paper_m2(
@@ -345,6 +391,64 @@ def test_no_resume_reruns_everything(tmp_path, monkeypatch):
     assert summary["n_papers_resumed_skipped"] == 0
 
 
+def test_retry_failed_reprocesses_only_failed_papers(tmp_path, monkeypatch):
+    _copy_papers(tmp_path / "raw", NEW_ID_PAPERS)
+    args = _args(tmp_path, _write_config(tmp_path))
+    real_build_tree = tree_builder.build_tree
+    broken = {"on": True}
+
+    def flaky(latex, version=1):
+        if broken["on"] and "Our method is simple" in latex:
+            raise RuntimeError("boom")
+        return real_build_tree(latex, version)
+
+    monkeypatch.setattr(tree_builder, "build_tree", flaky)
+    assert run_m2.run_stage(args) == run_m2.EXIT_OK
+    assert read_json(tmp_path / "reports" / "summary_stats_m2_t.json")["n_failed"] == 1
+
+    # Sửa lỗi rồi bật --retry_failed: chỉ bài failed được chạy lại, không cần --no_resume.
+    broken["on"] = False
+    calls: list[str] = []
+    real_process = run_m2.process_paper_m2
+
+    def counting(*call_args, **call_kwargs):
+        calls.append(call_args[1])
+        return real_process(*call_args, **call_kwargs)
+
+    monkeypatch.setattr(run_m2, "process_paper_m2", counting)
+    args.retry_failed = True
+    assert run_m2.run_stage(args) == run_m2.EXIT_OK
+    assert calls == ["2401.00001"]
+    summary = read_json(tmp_path / "reports" / "summary_stats_m2_t.json")
+    assert (summary["n_failed"], summary["n_ok"], summary["n_empty_record"]) == (0, 2, 1)
+
+
+def test_resume_skip_honors_retry_failed():
+    failed = {"status": run_m2.STATUS_FAILED}
+    ok = {"status": run_m2.STATUS_OK}
+    assert run_m2._resume_skip(failed) is True
+    assert run_m2._resume_skip(failed, retry_failed=True) is False
+    assert run_m2._resume_skip(ok, retry_failed=True) is True
+
+
+def test_flush_checkpoint_continues_after_write_error(tmp_path, monkeypatch):
+    path = tmp_path / "checkpoint.jsonl"
+    calls = {"n": 0}
+    real_append = run_m2.append_jsonl
+
+    def flaky(target, record):
+        calls["n"] += 1
+        if calls["n"] <= 2:  # cả lần đầu và lần thử lại của bản ghi 1 đều lỗi
+            raise OSError("disk full")
+        return real_append(target, record)
+
+    monkeypatch.setattr(run_m2, "append_jsonl", flaky)
+    run_m2._flush_checkpoint(path, [{"arxiv_id": "a"}, {"arxiv_id": "b"}])
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert '"arxiv_id": "b"' in lines[0]
+
+
 def test_run_stage_missing_input_returns_bad_input(tmp_path):
     assert run_m2.run_stage(_args(tmp_path, _write_config(tmp_path))) == run_m2.EXIT_BAD_INPUT
 
@@ -428,6 +532,20 @@ def test_paper_worker_recovers_after_timeout(tmp_path):
         worker.close()
 
 
+def test_paper_worker_recovers_after_crash(tmp_path):
+    settings = run_m2.M2Settings(use_worker=True)
+    worker = run_m2.PaperWorker(settings, target=_crashing_worker)
+    try:
+        crashed = worker.run(tmp_path, "2506.00001-die", tmp_path, timeout=30.0)
+        assert crashed["status"] == run_m2.STATUS_FAILED
+        assert crashed["stage"] == "worker"
+        # Worker chết không được làm hỏng các bài sau.
+        again = worker.run(tmp_path, "2506.00002", tmp_path, timeout=30.0)
+        assert again == {"arxiv_id": "2506.00002", "status": run_m2.STATUS_OK}
+    finally:
+        worker.close()
+
+
 def test_run_stage_with_worker_processes_paper(tmp_path):
     _copy_papers(tmp_path / "raw", ["2310-12345"])
     config = _write_config(tmp_path, m2={"use_worker": True})
@@ -466,3 +584,32 @@ def test_build_summary_ratios_and_resume_flags():
     empty = run_m2.build_summary(args, settings, [], 0, {})
     assert empty["success_rate"] is None
     assert empty["bib_dedup_ratio"] is None
+
+
+def test_build_summary_partial_truncated_and_tree_denominator():
+    args = SimpleNamespace(id_start="2506.00788", id_end="2506.05787")
+    settings = _settings()
+    results = [
+        run_m2.PaperResult(
+            arxiv_id="2506.00788",
+            status=run_m2.STATUS_OK,
+            n_versions=2,
+            n_versions_done=2,
+            max_depth=4,
+            partial=True,
+            truncated=True,
+        ),
+        run_m2.PaperResult(arxiv_id="2506.00789", status=run_m2.STATUS_EMPTY),
+        run_m2.PaperResult(
+            arxiv_id="2506.00790", status=run_m2.STATUS_SKIPPED_LARGE, n_versions=3
+        ),
+        run_m2.PaperResult(arxiv_id="2506.00791", status=run_m2.STATUS_TIMEOUT),
+    ]
+    summary = run_m2.build_summary(args, settings, results, 0, {})
+    assert summary["n_partial"] == 1
+    assert summary["n_truncated"] == 1
+    assert summary["n_timeout"] == 1
+    assert summary["n_papers_with_tree"] == 1
+    # Chỉ chia cho bài dựng được cây (1), không phải cả 4 bài.
+    assert summary["avg_versions_per_paper"] == 2.0
+    assert summary["avg_tree_depth"] == 4.0

@@ -1,7 +1,8 @@
 """Kiểm thử CLI runner ``src/main.py`` (P3-01): mock data, không gọi mạng.
 
-Bao phủ: kiểm tra tham số, điều phối stage (``m1``/``m2``/``all``), ánh xạ ``--no_resume``,
-mã thoát, import lười M2 khi chỉ chạy M1, và smoke ``--help`` qua subprocess.
+Bao phủ: kiểm tra tham số, điều phối stage (``m1``/``m2``/``all``), ánh xạ ``--no_resume``
+(không kéo theo discovery), chuyển tiếp cờ M1, mã thoát nguyên bản của M1, import lười M2 khi
+chỉ chạy M1, và smoke ``--help`` qua subprocess.
 """
 
 import logging
@@ -134,6 +135,61 @@ def test_stage_m1_dispatches_only_m1(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert runner.main(_base_argv(tmp_path, "m1")) == runner.EXIT_OK
     assert captured["args"].name == runner.DEFAULT_NAME  # type: ignore[attr-defined]
     assert captured["contact"] == "test@example.com"
+
+
+@pytest.mark.parametrize(
+    "m1_code",
+    [run_m1.EXIT_PARTIAL, run_m1.EXIT_BLOCKED, run_m1.EXIT_ABORTED, run_m1.EXIT_DISK,
+     run_m1.EXIT_DISCOVERY],
+)  # fmt: skip
+def test_stage_m1_returns_native_exit_codes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, m1_code: int
+) -> None:
+    """``--stage m1`` trả nguyên mã của run_m1 (P3-02a dựa vào 3/4/5/6 để xử lý sự cố)."""
+    monkeypatch.setattr(run_m1, "run_pipeline", lambda *a, **k: m1_code)
+    assert runner.main(_base_argv(tmp_path, "m1")) == m1_code
+
+
+def test_m1_flags_forwarded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Các cờ M1 trong hướng dẫn (--max_disk_gb, --skip_s2, ...) được chuyển xuống run_m1."""
+    seen: dict[str, object] = {}
+
+    def fake_pipeline(args: object, contact: str, *extra: object) -> int:
+        seen["m1"] = args
+        return run_m1.EXIT_OK
+
+    monkeypatch.setattr(run_m1, "run_pipeline", fake_pipeline)
+    argv = _base_argv(tmp_path, "m1") + [
+        "--delay", "4.5",
+        "--max_disk_gb", "25",
+        "--max_consecutive_errors", "7",
+        "--s2_batch", "50",
+        "--skip_crawl",
+        "--skip_s2",
+    ]  # fmt: skip
+    assert runner.main(argv) == run_m1.EXIT_OK
+    m1_args = seen["m1"]
+    assert m1_args.delay == 4.5  # type: ignore[attr-defined]
+    assert m1_args.max_disk_gb == 25  # type: ignore[attr-defined]
+    assert m1_args.max_consecutive_errors == 7  # type: ignore[attr-defined]
+    assert m1_args.s2_batch == 50  # type: ignore[attr-defined]
+    assert m1_args.skip_crawl is True  # type: ignore[attr-defined]
+    assert m1_args.skip_s2 is True  # type: ignore[attr-defined]
+
+
+def test_retry_failed_propagates_to_m2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``--retry_failed`` được chuyển tiếp xuống M2."""
+    seen: dict[str, object] = {}
+
+    def fake_stage(args: object) -> int:
+        seen["m2"] = args
+        return run_m2.EXIT_OK
+
+    monkeypatch.setattr(run_m2, "run_stage", fake_stage)
+    assert runner.main(_base_argv(tmp_path, "m2") + ["--retry_failed"]) == run_m2.EXIT_OK
+    assert seen["m2"].retry_failed is True  # type: ignore[attr-defined]
 
 
 def test_stage_m2_dispatches_only_m2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -334,10 +390,10 @@ def test_keyboard_interrupt_returns_130(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert runner.main(_base_argv(tmp_path, "m1")) == runner.EXIT_INTERRUPTED
 
 
-def test_m1_missing_contact_returns_bad_input(
+def test_m1_missing_contact_returns_native_bad_input(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Thiếu ``--contact`` và biến môi trường -> M1 báo lỗi, runner trả 1."""
+    """Thiếu ``--contact`` và biến môi trường -> trả mã sai tham số RIÊNG của M1 (2)."""
     monkeypatch.delenv(crawler.CONTACT_ENV, raising=False)
     monkeypatch.setattr(run_m1, "run_pipeline", _fail_if_called)
 
@@ -348,7 +404,7 @@ def test_m1_missing_contact_returns_bad_input(
         "--kaggle_json", str(_kaggle(tmp_path)),
         "--config", str(_config(tmp_path)),
     ]
-    assert runner.main(argv) == runner.EXIT_BAD_INPUT
+    assert runner.main(argv) == run_m1.EXIT_BAD_INPUT
 
 
 def _raise_keyboard_interrupt(*args: object, **kwargs: object) -> int:
@@ -438,6 +494,39 @@ def test_auto_detect_existing_discovery_file(
     ]
     assert runner.main(argv) == runner.EXIT_OK
     assert seen["m1"].skip_discovery is True  # type: ignore[attr-defined]
+
+
+def test_no_resume_without_kaggle_still_uses_existing_discovery(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``--no_resume`` chỉ chạy lại crawl; có discovery sẵn thì không đòi --kaggle_json."""
+    seen: dict[str, object] = {}
+
+    def fake_pipeline(args: object, contact: str, *extra: object) -> int:
+        seen["m1"] = args
+        return run_m1.EXIT_OK
+
+    monkeypatch.setattr(run_m1, "run_pipeline", fake_pipeline)
+
+    data_root = tmp_path / "raw"
+    data_root.mkdir()
+    (data_root / "discovery_kien.jsonl").write_text(
+        '{"arxiv_id": "2506.00788"}\n', encoding="utf-8"
+    )
+
+    argv = [
+        "--stage", "m1",
+        "--name", "kien",
+        "--id_start", ID_START,
+        "--id_end", ID_END,
+        "--contact", "test@example.com",
+        "--config", str(_config(tmp_path)),
+        "--data_root", str(data_root),
+        "--no_resume",
+    ]
+    assert runner.main(argv) == run_m1.EXIT_OK
+    assert seen["m1"].skip_discovery is True  # type: ignore[attr-defined]
+    assert seen["m1"].fresh_crawl is True  # type: ignore[attr-defined]
 
 
 def test_auto_detect_shared_25k_discovery_file(

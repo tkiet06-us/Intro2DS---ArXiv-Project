@@ -232,7 +232,7 @@ python -m src.main --stage m2 --name khang --id_start 2411.03799 --id_end 2411.0
 ```
 
 ### 6.2 Gỡ lỗi chi tiết trực tiếp trên main process (`--no_worker`)
-Mặc định M2 xử lý mỗi bài trong một tiến trình worker con độc lập để cô lập lỗi và tự ngắt nếu bài chạy quá thời gian (`m2.paper_timeout_s = 60s`).
+Mặc định M2 xử lý mỗi bài trong một tiến trình worker con độc lập để cô lập lỗi và tự ngắt nếu bài chạy quá thời gian (`m2.paper_timeout_s = 120s`). Worker chết giữa chừng (OOM/crash) được dựng lại cho bài kế tiếp, không làm hỏng cả dải.
 Khi muốn debug một bài bị lỗi bất thường và xem **toàn bộ stack trace / traceback** chi tiết trên màn hình console, hãy thêm cờ `--no_worker`:
 ```bash
 python -m src.main --stage m2 --name khang --id_start 2411.03799 --id_end 2411.08798 --no_worker
@@ -242,6 +242,14 @@ python -m src.main --stage m2 --name khang --id_start 2411.03799 --id_end 2411.0
 Bỏ qua checkpoint cũ và parse lại từ bài đầu tiên trong dải:
 ```bash
 python -m src.main --stage m2 --name khang --id_start 2411.03799 --id_end 2411.08798 --no_resume
+```
+
+> Với M1, `--no_resume` chỉ chạy lại crawl/S2; nếu đã có `data/raw/discovery_<name>.jsonl` thì vẫn dùng lại discovery và **không cần** snapshot Kaggle.
+
+### 6.4 Chỉ chạy lại bài lỗi (`--retry_failed`)
+Mặc định resume bỏ qua cả bài `failed` để số đo benchmark ổn định. Khi đã sửa nguyên nhân (hoặc muốn thử lại do lỗi mạng tạm thời), chỉ cần thêm `--retry_failed` thay vì xóa cả checkpoint:
+```bash
+python -m src.main --stage m2 --name khang --id_start 2411.03799 --id_end 2411.08798 --retry_failed
 ```
 
 ---
@@ -266,9 +274,18 @@ Trong file báo cáo `reports/summary_stats_m2_<name>.json`, các bài báo đư
 - **`ok`**: Parse thành công hoàn toàn, đã tạo file `hierarchy.json` và `refs.bib`.
 - **`empty_record`**: Bài báo trên arXiv chỉ có file PDF hoặc file ảnh, **hoàn toàn không có file nguồn `.tex`**.
   > 📌 **Lưu ý:** Trạng thái này là **hoàn toàn bình thường theo thiết kế dữ liệu arXiv** (tác giả nộp PDF trực tiếp), parser ghi nhận hợp lệ chứ không phải do lỗi code!
-- **`skipped_large`**: File `.tex` vượt quá ngưỡng dung lượng quy định (mặc định > 2MB trong `configs/config.yaml`), được bỏ qua để bảo vệ RAM.
-- **`timeout`**: Bài báo parse quá thời gian cho phép (mặc định 60 giây).
+- **`skipped_large`**: File `.tex` vượt quá ngưỡng dung lượng quy định (mặc định > 20MB, tức `m2.max_tex_bytes_skip` trong `configs/config.yaml`), được bỏ qua để bảo vệ RAM.
+- **`timeout`**: Bài báo parse quá thời gian cho phép (mặc định 120 giây).
 - **`failed`**: Bài báo gặp lỗi cú pháp LaTeX đặc thù không thể phục hồi (được log lại ngắn gọn để rà soát).
+
+Ngoài các trạng thái trên, báo cáo còn có các chỉ số cần ghi lại khi so sánh giữa các máy:
+
+- **`n_timeout`**: số bài timeout — phụ thuộc tốc độ máy nên mỗi thành viên cần nêu con số này trong báo cáo cá nhân.
+- **`n_partial`**: số bài `ok` nhưng còn version lỗi/chưa xử lý (vẫn có output, chỉ thiếu một phần).
+- **`n_truncated`**: số bài bị cắt cây do vượt `m2.max_nodes`.
+- **`n_papers_with_tree`**: số bài dựng được cây; `avg_versions_per_paper` và `avg_tree_depth` chỉ chia cho số này (không bị kéo thấp bởi bài `empty_record`/`failed`).
+
+Bài `failed`/`empty_record`/`skipped_large` **không** tạo `hierarchy.json` rỗng; nếu lần chạy trước đã có output thì output cũ được dọn đi để không nhìn nhầm là hợp lệ.
 
 ---
 
@@ -278,10 +295,11 @@ Trong file báo cáo `reports/summary_stats_m2_<name>.json`, các bài báo đư
 - **An toàn khi ngắt quãng:** Nếu bạn bấm `Ctrl+C`, tắt máy, hoặc bị ngắt điện giữa chừng:
   - Tất cả các bài đã parse trước đó đều được bảo lưu nguyên vẹn.
   - Khi mở lại, bạn chỉ cần gõ lại **đúng câu lệnh ban đầu**: M2 sẽ tự động đọc checkpoint, **bỏ qua ngay lập tức tất cả các bài đã xong** và tiếp tục ngay từ bài còn lại!
-- **Mã thoát (Exit Code):**
+- **Mã thoát (Exit Code) của `--stage m2`:**
   - `0`: Hoàn thành tốt toàn bộ dải bài.
   - `1`: Lỗi cấu hình, tham số hoặc thiếu thư mục dữ liệu đầu vào.
   - `130`: Người dùng nhấn `Ctrl+C` dừng tiến trình.
+- **Riêng `--stage m1`:** runner trả **nguyên mã của `run_m1`** để bảng xử lý sự cố P3-02a còn dùng được: `1` còn lỗi tạm thời (chạy lại để thử), `2` sai tham số/dữ liệu, `3` bị arXiv chặn (403), `4` quá nhiều lỗi liên tiếp, `5` đầy đĩa, `6` discovery thất bại. Với `--stage all`, runner gộp về `0`/`1`/`130`.
 
 ---
 
@@ -307,5 +325,5 @@ Trong file báo cáo `reports/summary_stats_m2_<name>.json`, các bài báo đư
 - [ ] Chạy thử 5 bài đầu (`--limit 5`) kiểm tra exit code `0`.
 - [ ] Chạy lệnh M2 cho toàn bộ dải ID của mình (Mục 5.2).
 - [ ] Kiểm tra kết quả tại `data/processed/papers_<name>/` (có đủ `hierarchy.json` và `refs.bib` cho các bài `ok`).
-- [ ] Kiểm tra báo cáo tổng kết tại `reports/summary_stats_m2_<name>.json`.
+- [ ] Kiểm tra báo cáo tổng kết tại `reports/summary_stats_m2_<name>.json` và ghi lại `n_timeout` (cùng `n_partial`, `n_truncated`) để so sánh giữa các máy.
 - [ ] Nén hoặc đồng bộ thư mục `data/processed/papers_<name>/` và file `summary_stats_m2_<name>.json` lên Drive nhóm để chuẩn bị cho Milestone M3!
