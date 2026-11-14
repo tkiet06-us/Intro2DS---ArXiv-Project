@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from src.common.utils_io import append_jsonl, read_json
+from src.common.utils_io import append_jsonl, iter_jsonl, read_json
 from src.m2_parsing import bibtex_extractor, dedup, latex_cleanup, run_m2, tree_builder
 
 MOCK = Path(__file__).resolve().parents[1] / "mock_data"
@@ -98,7 +98,7 @@ def _hanging_worker(conn, _settings_dict) -> None:
 
 
 def _crashing_worker(conn, _settings_dict) -> None:
-    """Worker giả cho test crash: ``arxiv_id`` chứa ``die`` thì ``os._exit(1)``, còn lại trả ngay.
+    """Worker giả cho test crash: ``arxiv_id`` chứa ``die`` (hoặc bài mock 2506.00099) thì ``os._exit(1)``.
 
     Ở cấp module để tiến trình con (spawn) pickle được theo tên.
     """
@@ -107,7 +107,7 @@ def _crashing_worker(conn, _settings_dict) -> None:
         if task is None:
             return
         _paper_dir, arxiv_id, _out_dir = task
-        if "die" in arxiv_id:
+        if "die" in arxiv_id or arxiv_id == "2506.00099":
             os._exit(1)
         conn.send({"arxiv_id": arxiv_id, "status": run_m2.STATUS_OK})
 
@@ -123,6 +123,13 @@ def test_list_version_dirs_sorted(tmp_path):
         (paper / name).mkdir(parents=True)
     assert [number for number, _ in run_m2.list_version_dirs(paper)] == [1, 2, 10]
     assert run_m2.list_version_dirs(tmp_path / "missing") == []
+
+
+def test_list_version_dirs_case_and_leading_zero(tmp_path):
+    paper = tmp_path / "p"
+    for name in ("v1", "V2", "v01", "v0"):
+        (paper / name).mkdir(parents=True)
+    assert [number for number, _ in run_m2.list_version_dirs(paper)] == [1]
 
 
 def test_id_range_key_orders_by_month_and_number():
@@ -164,10 +171,43 @@ def test_list_papers_in_range_limit_and_missing_root(tmp_path):
     assert run_m2.list_papers_in_range(tmp_path / "khong-co", "2506.00788", "2506.05787") == []
 
 
+def test_list_papers_in_range_mixed_prefix_types_rejected(tmp_path):
+    """Từ chối dải trộn giữa ID cũ (archive/YYMMNNN) và ID mới (YYMM.NNNNN)."""
+    root = tmp_path / "papers_t"
+    for name in ("hep-th_9901001", "2506-00788"):
+        (root / name).mkdir(parents=True)
+    with pytest.raises(ValueError, match="khong cung dang ID"):
+        run_m2.list_papers_in_range(root, "hep-th/9901001", "2506.00788")
+
+
+def test_list_papers_in_range_mixed_folders_filtered(tmp_path):
+    """Khi thư mục chứa lẫn ID cũ và mới, chỉ chọn bài đúng dạng ID và nằm trong dải."""
+    root = tmp_path / "papers_t"
+    for name in ("hep-th_9901001", "2506-00788", "2506-00789"):
+        (root / name).mkdir(parents=True)
+    found = run_m2.list_papers_in_range(root, "2506.00788", "2506.00789")
+    assert [arxiv_id for arxiv_id, _ in found] == ["2506.00788", "2506.00789"]
+
+
+def test_validate_id_range_rejects_mixed_or_different_archives():
+    with pytest.raises(ValueError, match="khong cung dang ID"):
+        run_m2.validate_id_range("hep-th/9901001", "2506.00788")
+    with pytest.raises(ValueError, match="khac archive"):
+        run_m2.validate_id_range("hep-th/9901001", "math.GT/0309136")
+    with pytest.raises(ValueError, match="phai <="):
+        run_m2.validate_id_range("2506.00788", "2506.00787")
+    # Cùng dạng và đúng thứ tự -> không raise
+    run_m2.validate_id_range("hep-th/9901001", "hep-th/9901050")
+    run_m2.validate_id_range("2506.00788", "2506.05787")
+
+
 def test_validate_rejects_bad_range_and_limit():
     parser = run_m2.build_parser()
     assert run_m2._validate(parser.parse_args(["--id_start", "2506.00788", "--id_end", "2506.00787"]))
     assert run_m2._validate(parser.parse_args(["--id_start", "bad", "--id_end", "2506.00787"]))
+    assert run_m2._validate(
+        parser.parse_args(["--id_start", "hep-th/9901001", "--id_end", "2506.00788"])
+    )
     assert run_m2._validate(
         parser.parse_args(["--id_start", "2506.00788", "--id_end", "2506.05787", "--limit", "0"])
     )
@@ -556,6 +596,37 @@ def test_run_stage_with_worker_processes_paper(tmp_path):
     assert (tmp_path / "processed" / "papers_t" / "2310-12345" / "hierarchy.json").exists()
 
 
+def test_run_stage_worker_crash_recovery_e2e(monkeypatch, tmp_path):
+    """E2E qua run_stage: bài 1 OK -> bài 2 crash worker -> worker tự hồi phục -> bài 3 OK."""
+    raw_papers = tmp_path / "raw" / "papers_t"
+    for name in ("2506-00098", "2506-00099", "2506-00100"):
+        (raw_papers / name).mkdir(parents=True)
+    config = _write_config(tmp_path, m2={"use_worker": True})
+    args = _args(
+        tmp_path,
+        config,
+        id_start="2506.00098",
+        id_end="2506.00100",
+        no_worker=False,
+    )
+    orig_worker = run_m2.PaperWorker
+    monkeypatch.setattr(
+        run_m2, "PaperWorker", lambda settings: orig_worker(settings, target=_crashing_worker)
+    )
+    assert run_m2.run_stage(args) == run_m2.EXIT_OK
+    summary = read_json(args.reports / f"summary_stats_m2_{args.name}.json")
+    assert summary["n_papers_total"] == 3
+    assert summary["n_ok"] == 2
+    assert summary["n_failed"] == 1
+    assert summary["failures"][0]["stage"] == "worker"
+    assert summary["failures"][0]["arxiv_id"] == "2506.00099"
+    checkpoint_lines = list(iter_jsonl(args.reports / f"checkpoint_m2_{args.name}.jsonl"))
+    assert len(checkpoint_lines) == 3
+    assert checkpoint_lines[0]["status"] == run_m2.STATUS_OK
+    assert checkpoint_lines[1]["status"] == run_m2.STATUS_FAILED
+    assert checkpoint_lines[2]["status"] == run_m2.STATUS_OK
+
+
 # ---------------------------------------------------------------------------
 # build_summary
 # ---------------------------------------------------------------------------
@@ -613,3 +684,18 @@ def test_build_summary_partial_truncated_and_tree_denominator():
     # Chỉ chia cho bài dựng được cây (1), không phải cả 4 bài.
     assert summary["avg_versions_per_paper"] == 2.0
     assert summary["avg_tree_depth"] == 4.0
+
+
+# ---------------------------------------------------------------------------
+# M2Settings.from_config
+# ---------------------------------------------------------------------------
+
+
+def test_m2_settings_from_missing_config(tmp_path):
+    assert run_m2.M2Settings.from_config(tmp_path / "khong-co.yaml") == run_m2.M2Settings()
+
+
+def test_m2_settings_from_config_without_m2_section(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"pipeline": {"checkpoint_every": 1}}), encoding="utf-8")
+    assert run_m2.M2Settings.from_config(path) == run_m2.M2Settings()

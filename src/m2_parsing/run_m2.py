@@ -72,7 +72,7 @@ EXIT_INTERRUPTED = 130
 # Tên stage dùng làm khóa checkpoint (đổi dải thì không dùng nhầm kết quả cũ).
 CHECKPOINT_STAGE = "m2"
 
-_VERSION_DIR = re.compile(r"^v(\d+)$", re.IGNORECASE)
+_VERSION_DIR = re.compile(r"^v([1-9]\d*)$")
 
 
 class M2Settings(BaseModel):
@@ -349,14 +349,46 @@ def id_range_key(arxiv_id: str) -> tuple[str, int]:
     return prefix, int(number)
 
 
+def validate_id_range(id_start: str, id_end: str) -> None:
+    """Kiểm tra hai đầu dải ID có cùng dạng chuẩn và đúng thứ tự.
+
+    Không hỗ trợ dải trộn giữa ID cũ (archive/YYMMNNN) và ID mới (YYMM.NNNNN), hoặc giữa hai
+    archive khác nhau của ID cũ (vd hep-th và math), vì chúng không thuộc cùng một dãy liên tục.
+
+    Args:
+        id_start: ID đầu dải.
+        id_end: ID cuối dải.
+
+    Raises:
+        ValueError: Khi ID không hợp lệ, hai ID khác dạng, khác archive, hoặc id_start > id_end.
+    """
+    validate_arxiv_id(id_start)
+    validate_arxiv_id(id_end)
+    is_old_start = "/" in id_start
+    is_old_end = "/" in id_end
+    if is_old_start != is_old_end:
+        raise ValueError(
+            f"--id_start ({id_start}) va --id_end ({id_end}) khong cung dang ID (cu / moi)"
+        )
+    if is_old_start:
+        arch_start = id_start.partition("/")[0]
+        arch_end = id_end.partition("/")[0]
+        if arch_start != arch_end:
+            raise ValueError(
+                f"--id_start ({id_start}) va --id_end ({id_end}) khac archive ({arch_start} != {arch_end})"
+            )
+    if id_range_key(id_start) > id_range_key(id_end):
+        raise ValueError(f"--id_start ({id_start}) phai <= --id_end ({id_end})")
+
+
 def list_papers_in_range(
     papers_root: Path, id_start: str, id_end: str, limit: int | None = None
 ) -> list[tuple[str, Path]]:
     """Liệt kê bài M1 đã tải nằm trong ``[id_start, id_end]`` (không tự sinh ID mới).
 
     Duyệt thư mục ``papers_<name>`` do M1 sinh ra nên dải đi qua nhiều tháng vẫn đúng mà không
-    cần giả định mỗi tháng có bao nhiêu bài. Mục không đúng dạng tên thư mục ID bị bỏ qua kèm
-    cảnh báo (dữ liệu lạ không làm sập cả dải).
+    cần giả định mỗi tháng có bao nhiêu bài. Mục không đúng dạng tên thư mục ID hoặc không cùng
+    dạng ID/archive với dải bị bỏ qua (dữ liệu lạ không làm sập cả dải).
 
     Args:
         papers_root: Thư mục chứa các thư mục bài (``data/raw/papers_<name>``).
@@ -366,16 +398,26 @@ def list_papers_in_range(
 
     Returns:
         Danh sách ``(arxiv_id, đường_dẫn_thư_mục_bài)`` sắp theo thứ tự ID.
+
+    Raises:
+        ValueError: Khi ``id_start`` và ``id_end`` khác dạng ID/archive hoặc ``id_start > id_end``.
     """
     if not papers_root.is_dir():
         return []
+    validate_id_range(id_start, id_end)
     low, high = id_range_key(id_start), id_range_key(id_end)
+    is_old_range = "/" in id_start
+    range_archive = id_start.partition("/")[0] if is_old_range else None
     found: list[tuple[str, Path]] = []
     for child in papers_root.iterdir():
         if not child.is_dir():
             continue
         try:
             arxiv_id = from_folder_name(child.name)
+            if ("/" in arxiv_id) != is_old_range:
+                continue
+            if is_old_range and arxiv_id.partition("/")[0] != range_archive:
+                continue
             key = id_range_key(arxiv_id)
         except ValueError:
             logger.warning("Bo qua muc khong dung dang ID trong %s: %s", papers_root, child.name)
@@ -905,8 +947,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _validate(args: argparse.Namespace) -> str | None:
     """Trả thông báo lỗi tham số, hoặc None nếu hợp lệ."""
     try:
-        if id_range_key(args.id_start) > id_range_key(args.id_end):
-            return f"--id_start ({args.id_start}) phai <= --id_end ({args.id_end})"
+        validate_id_range(args.id_start, args.id_end)
     except ValueError as exc:
         return str(exc)
     if args.limit is not None and args.limit <= 0:
@@ -949,6 +990,7 @@ __all__ = [
     "main",
     "process_paper_m2",
     "run_stage",
+    "validate_id_range",
 ]
 
 

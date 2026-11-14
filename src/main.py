@@ -106,10 +106,12 @@ def _validate(args: argparse.Namespace) -> str | None:
     # Chỉ kiểm thứ tự dải khi chạy M2 (M1 tự kiểm theo cách của nó); nhờ vậy `--stage m1`
     # không cần import M2 -> giữ được import lười.
     if args.stage in ("m2", "all"):
-        from src.m2_parsing.run_m2 import id_range_key
+        from src.m2_parsing.run_m2 import validate_id_range
 
-        if id_range_key(args.id_start) > id_range_key(args.id_end):
-            return f"--id_start ({args.id_start}) phai <= --id_end ({args.id_end})"
+        try:
+            validate_id_range(args.id_start, args.id_end)
+        except ValueError as exc:
+            return str(exc)
     return None
 
 

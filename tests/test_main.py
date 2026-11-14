@@ -87,6 +87,12 @@ def test_inverted_range_exits_bad_input() -> None:
     assert runner.main(argv) == runner.EXIT_BAD_INPUT
 
 
+def test_mixed_id_formats_exits_bad_input() -> None:
+    """Dải trộn giữa ID cũ và ID mới -> exit 1."""
+    argv = ["--stage", "m2", "--id_start", "hep-th/9901001", "--id_end", ID_END]
+    assert runner.main(argv) == runner.EXIT_BAD_INPUT
+
+
 def test_non_positive_limit_exits_bad_input() -> None:
     """``--limit <= 0`` -> exit 1."""
     argv = ["--stage", "m2", "--id_start", ID_START, "--id_end", ID_END, "--limit", "0"]
@@ -427,6 +433,18 @@ def test_stage_m1_does_not_import_m2(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     finally:
         if removed is not None:
             sys.modules["src.m2_parsing.run_m2"] = removed
+
+
+def test_stage_m2_does_not_import_m1(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Chạy ``--stage m2`` không import ``src.m1_crawling.run_m1`` (giữ số đo RAM sạch)."""
+    removed = sys.modules.pop("src.m1_crawling.run_m1", None)
+    monkeypatch.setattr(run_m2, "run_stage", lambda *a, **k: run_m2.EXIT_OK)
+    try:
+        assert runner.main(_base_argv(tmp_path, "m2")) == runner.EXIT_OK
+        assert "src.m1_crawling.run_m1" not in sys.modules
+    finally:
+        if removed is not None:
+            sys.modules["src.m1_crawling.run_m1"] = removed
 
 
 def test_help_via_subprocess_exits_zero() -> None:
