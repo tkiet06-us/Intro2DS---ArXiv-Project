@@ -250,7 +250,25 @@ def extract_arxiv_ids(text: str | None) -> set[str]:
     if not text:
         return set()
     found = (m.group(0).lower() for m in ARXIV_ID_PATTERN.finditer(text))
-    return {VERSION_SUFFIX_PATTERN.sub("", raw_id) for raw_id in found}
+    ids = {VERSION_SUFFIX_PATTERN.sub("", raw_id) for raw_id in found}
+    return {i for i in ids if _is_plausible_new_id(i)}
+
+
+# ID kiểu mới "YYMM.NNNNN": tháng 01..12; từ 2015 (1501) số thứ tự 5 chữ số, trước đó 4 chữ số.
+# Lọc này loại các chuỗi số trông giống ID nằm trong DOI, ví dụ
+# "10.1109/QSW59989.2023.00028" -> "2023.00028" (tháng 23) hay "10.3389/fphy.2014.00005".
+_NEW_ID_PARTS = re.compile(r"^(\d{2})(\d{2})\.(\d{4,5})$")
+
+
+def _is_plausible_new_id(arxiv_id: str) -> bool:
+    """True với ID kiểu cũ, hoặc ID kiểu mới có tháng và độ dài số thứ tự hợp lệ."""
+    match = _NEW_ID_PARTS.match(arxiv_id)
+    if match is None:
+        return True  # ID kiểu cũ (archive/NNNNNNN) đã được whitelist archive kiểm
+    year, month, number = int(match[1]), int(match[2]), match[3]
+    if not 1 <= month <= 12:
+        return False
+    return len(number) == (5 if (year, month) >= (15, 1) else 4)
 
 
 def author_key(name: str) -> tuple[str, str] | None:
@@ -332,7 +350,7 @@ class _Prepared:
 
 def _prepare_entry(entry: Bibtex, raw_text: str | None = None) -> _Prepared:
     """Làm sạch một mục BibTeX; raw_text (nếu có) bổ sung ID arXiv và năm khi trường bị thiếu."""
-    title = preprocess(entry.title)
+    title = preprocess(entry.title, remove_stopwords=True)
     raw_text = raw_text or getattr(entry, "raw", None)  # sẵn sàng nếu schema thêm trường raw
     text_fields = (entry.url, entry.journal, entry.doi, raw_text)
     return _Prepared(
@@ -366,7 +384,7 @@ def _normalize_arxiv_id(raw: str | None) -> str:
 
 
 def _prepare_candidate(candidate: Reference) -> _Prepared:
-    title = preprocess(candidate.ref_title)
+    title = preprocess(candidate.ref_title, remove_stopwords=True)
     return _Prepared(
         title=title,
         words=frozenset(title.split()),
