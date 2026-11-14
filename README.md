@@ -891,22 +891,39 @@ Thấy `passed` là bạn đã sẵn sàng. ✅
 
 > Luôn **kích hoạt môi trường ảo** và chạy lệnh **từ thư mục gốc** của repo.
 
-### 10.1 Chạy toàn bộ pipeline (M1 + M2)
+### 10.1 Chạy pipeline (M1 + M2)
+
+Pipeline Runner `src/main.py` điều phối 2 stage **chạy tách biệt** để benchmark riêng:
 
 ```bash
-python -m src.main --id_start 2506.00788 --id_end 2506.05787
+# Stage M1: discovery -> crawl arXiv + Semantic Scholar -> reports/summary_stats_<name>.json
+python -m src.main --stage m1 --id_start 2506.00788 --id_end 2506.05787 --name kien --kaggle_json data/kaggle.json
+
+# Stage M2: parse + cleanup + tree + BibTeX + dedup -> reports/summary_stats_m2_<name>.json
+python -m src.main --stage m2 --id_start 2506.00788 --id_end 2506.05787 --name kien
 ```
 
 | Tham số | Ý nghĩa |
 |---|---|
+| `--stage` | `m1` \| `m2` \| `all` (mặc định `all`, chỉ để chạy thử) |
 | `--id_start` | arXiv ID bắt đầu của dải |
 | `--id_end` | arXiv ID kết thúc của dải |
+| `--name` | Tên bộ dữ liệu, dùng chung cho cả hai stage (mặc định `default`) |
 | `--config` | Đường dẫn file cấu hình (mặc định `configs/config.yaml`) |
-| `--no_resume` | Bỏ qua checkpoint, chạy lại từ đầu |
+| `--kaggle_json` | Snapshot Kaggle cần khi M1 chạy discovery |
+| `--contact` | Email User-Agent (hoặc biến môi trường `ARXIV_CONTACT`) |
+| `--data_root` | Thư mục dữ liệu M1 (mặc định `data/raw`) |
+| `--processed_root` | Thư mục xuất M2 (mặc định `data/processed`) |
+| `--reports` | Thư mục chứa file thống kê (mặc định `reports`) |
+| `--limit` | Chỉ chạy N bài đầu (chạy thử / benchmark) |
+| `--no_resume` | Bỏ checkpoint, chạy lại stage đang chạy từ đầu |
+| `--no_worker` | M2 xử lý bài ngay trong tiến trình chính (bỏ timeout) |
 
 > 📌 Ví dụ trên là một dải ID cá nhân. Khi chạy thật: **crawl (M1)** mỗi người chạy dải của mình rồi gom lên Drive; **parse (M2)** chạy **tập trung** trên bộ 25.000 bài đã gom.
 
-**Checkpoint/Resume:** nếu chương trình bị ngắt (mất mạng, tắt máy), chỉ cần **chạy lại đúng lệnh cũ**, nó sẽ tiếp tục từ bài đang dở, không tải lại từ đầu.
+**Chế độ `--stage all` (mặc định) chỉ để chạy thử:** nó chạy M1 rồi M2 với tối đa `pipeline.all_stage_limit` bài đầu (mặc định 5) và dùng tên `<name>_sample`, nên **không ghi đè** `summary_stats_<name>.json` / `summary_stats_m2_<name>.json` của benchmark thật.
+
+**Checkpoint/Resume:** nếu chương trình bị ngắt (mất mạng, tắt máy), chỉ cần **chạy lại đúng lệnh cũ**, nó sẽ tiếp tục từ bài đang dở, không tải lại từ đầu. `--no_resume` buộc chạy lại từ đầu.
 
 ### 10.2 Chạy từng module (khi phát triển)
 

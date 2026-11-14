@@ -17,3 +17,26 @@ paths:
 ml:
   top_k: 5
   seed: 42
+pipeline:
+  # Số bài tối đa cho `--stage all` (chỉ chạy thử, KHÔNG dùng để benchmark).
+  all_stage_limit: 5
+  # Cứ bao nhiêu bài thì ghi checkpoint một lần (1 = ghi sau mỗi bài, an toàn nhất).
+  checkpoint_every: 1
+m2:
+  # Tổng dung lượng .tex sau khi ghép vượt ngưỡng này -> chạy chế độ nhẹ (degrade).
+  max_tex_bytes: 5000000
+  # Vượt ngưỡng này -> bỏ qua bài (skipped_large), kể cả ở chế độ nhẹ.
+  max_tex_bytes_skip: 20000000
+  # Độ sâu tối đa của \input/\include khi ghép nguồn.
+  max_include_depth: 10
+  # Trần thời gian xử lý một bài (giây); vượt -> hủy worker, đánh dấu timeout.
+  paper_timeout_s: 120
+  # Trần số node cây; vượt -> cắt bớt và ghi cờ truncated.
+  max_nodes: 200000
+  # Số dòng tối đa trong danh sách `failures` của summary (tổng vẫn ở n_failed).
+  failures_max: 100
+  # Chạy mỗi bài trong tiến trình worker riêng để ngắt được bài treo (đặt false chỉ khi test).
+  use_worker: true
+  # Chu kỳ lấy mẫu RAM/đĩa của Profiler (giây) và số mẫu RAM giữa hai lần đo đĩa.
+  profiler_interval_s: 0.5
+  profiler_disk_every: 10
