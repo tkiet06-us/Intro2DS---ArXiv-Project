@@ -113,13 +113,17 @@ def find_main_tex(src_dir: str | Path) -> Path:
     return min(texts.items(), key=rank)[0]
 
 
-def _expand(path: Path, base: Path, stack: frozenset[Path]) -> str:
+def _expand(
+    path: Path, base: Path, stack: frozenset[Path], depth: int, max_depth: int | None
+) -> str:
     """Gộp đệ quy một file, chặn include vòng bằng tập ``stack`` các file đang mở.
 
     Args:
         path: File đang xử lý.
         base: Thư mục gốc để phân giải đường dẫn include.
         stack: Các file trên đường đi hiện tại (để phát hiện chu trình).
+        depth: Độ sâu hiện tại (file gốc là 0), tăng 1 mỗi lần vào file con.
+        max_depth: Trần độ sâu lồng nhau; ``None`` là không giới hạn.
 
     Returns:
         Nội dung file với mọi include hợp lệ đã được thay bằng nội dung file con.
@@ -135,16 +139,23 @@ def _expand(path: Path, base: Path, stack: frozenset[Path]) -> str:
         if target in stack:
             logger.warning("%s: include vòng tới %s, bỏ qua", path.name, target.name)
             return " "
-        return "\n" + _expand(target, base, stack | {target}) + "\n"
+        if max_depth is not None and depth >= max_depth:
+            logger.warning(
+                "%s: vượt độ sâu include tối đa %d, bỏ qua %s", path.name, max_depth, name
+            )
+            return " "
+        return "\n" + _expand(target, base, stack | {target}, depth + 1, max_depth) + "\n"
 
     return _INCLUDE.sub(replace, text)
 
 
-def resolve_includes(main_tex: str | Path) -> str:
+def resolve_includes(main_tex: str | Path, max_depth: int | None = None) -> str:
     """Gộp ``\\input`` / ``\\include`` bắt đầu từ một file ``.tex`` cụ thể.
 
     Args:
         main_tex: Đường dẫn file gốc (thường là file chứa ``\\documentclass``).
+        max_depth: Trần độ sâu lồng nhau của ``\\input``/``\\include`` (file gốc là 0);
+            ``None`` là không giới hạn (giữ hành vi cũ).
 
     Returns:
         Chuỗi LaTeX đã gộp.
@@ -155,15 +166,16 @@ def resolve_includes(main_tex: str | Path) -> str:
     path = Path(main_tex).resolve()
     if not path.is_file():
         raise FileNotFoundError(f"không tìm thấy file LaTeX: {main_tex}")
-    return _expand(path, path.parent, frozenset({path}))
+    return _expand(path, path.parent, frozenset({path}), 0, max_depth)
 
 
-def resolve_paper(src_dir: str | Path) -> str:
+def resolve_paper(src_dir: str | Path, max_depth: int | None = None) -> str:
     """Gộp toàn bộ nguồn LaTeX của một version thành một chuỗi duy nhất.
 
     Args:
         src_dir: Thư mục version, ví dụ ``data/2310-12345/v1``. Thư mục rỗng
             (bài PDF-only) là "record rỗng" hợp lệ.
+        max_depth: Trần độ sâu lồng nhau của ``\\input``/``\\include``; ``None`` là không giới hạn.
 
     Returns:
         Chuỗi LaTeX đã gộp; chuỗi rỗng nếu version không có TeX.
@@ -173,7 +185,7 @@ def resolve_paper(src_dir: str | Path) -> str:
     except FileNotFoundError:
         # Bài PDF-only là record rỗng hợp lệ (README mục 12, ghi chú 5).
         return ""
-    return resolve_includes(main)
+    return resolve_includes(main, max_depth=max_depth)
 
 
 __all__ = ["find_main_tex", "resolve_includes", "resolve_paper", "strip_comments"]
