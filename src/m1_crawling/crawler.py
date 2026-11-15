@@ -80,7 +80,7 @@ DEFAULT_OUT = Path("data/raw/papers")
 CONTACT_ENV = "ARXIV_CONTACT"  # biến môi trường thay cho --contact / tham số contact
 MIN_DELAY_S = 3.0  # quy định arXiv: tối thiểu 3 giây giữa hai request
 USER_AGENT = "DS-Project-HCMUS-arXiv-crawler/0.1 (student project; contact: {contact})"
-KEEP_EXTENSIONS = frozenset({".tex", ".bib"})  # ảnh và mọi loại khác không vào corpus
+KEEP_EXTENSIONS = frozenset({".tex", ".bib", ".bbl"})  # ảnh và mọi loại khác không vào corpus
 MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024  # chặn file tải về quá lớn
 MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024  # chặn "zip bomb"
 MAX_KEPT_FILE_BYTES = 50 * 1024 * 1024  # một file .tex/.bib lớn hơn mức này bị bỏ qua
@@ -320,7 +320,7 @@ def _from_tar(tar: tarfile.TarFile) -> Extracted:
     if any(PurePosixPath(name).suffix.lower() == ".tex" for name in result.files):
         result.status, result.reason = STATUS_OK, None
     else:
-        # Chỉ có .bib mà không có .tex: không phải bài LaTeX dùng được -> record rỗng.
+        # Chỉ có .bib/.bbl mà không có .tex: không phải bài LaTeX dùng được -> record rỗng.
         result.files.clear()
     return result
 
