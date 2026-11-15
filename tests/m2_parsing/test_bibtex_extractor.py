@@ -5,9 +5,11 @@ from pathlib import Path
 import pytest
 
 from src.m2_parsing.bibtex_extractor import (
+    convert_bbl_to_bib,
     extract_bibitems,
     extract_bibtex,
     format_bibtex_entry,
+    parse_bbl_file,
     parse_bib_file,
     write_bibtex,
 )
@@ -246,3 +248,51 @@ def test_author_parsing_variants(raw_authors, expected):
         "\\end{thebibliography}\n"
     )
     assert extract_bibitems(latex)[0]["authors"] == expected
+
+
+def test_extract_bibtex_falls_back_to_bbl_and_converts_to_bib(tmp_path):
+    """Khi không có .bib và .tex không có \\bibitem, phải fallback sang .bbl và giữ nguyên .bbl gốc."""
+    vdir = tmp_path / "v1"
+    vdir.mkdir()
+    bbl_file = vdir / "main.bbl"
+    bbl_file.write_text(
+        "\\begin{thebibliography}{1}\n"
+        "\\bibitem{doe2023} J. Doe, \\emph{Fallback Paper}, NeurIPS, 2023.\n"
+        "\\end{thebibliography}\n",
+        encoding="utf-8",
+    )
+    latex = "\\documentclass{article}\\begin{document}Hello \\cite{doe2023}\\end{document}"
+
+    entries = extract_bibtex(latex, vdir)
+    assert len(entries) == 1
+    assert entries[0]["citation_key"] == "doe2023"
+    assert entries[0]["title"] == "Fallback Paper"
+    assert entries[0]["year"] == 2023
+
+    converted = convert_bbl_to_bib(vdir)
+    assert len(converted) == 1
+    assert (vdir / "refs.bib").is_file()
+    assert bbl_file.is_file()  # file .bbl gốc vẫn được giữ nguyên
+
+
+def test_parse_bbl_supports_amsrefs_and_keeps_unparseable_bbl(tmp_path):
+    ams_bbl = tmp_path / "ams.bbl"
+    ams_bbl.write_text(
+        "\\begin{bibdiv}\\begin{biblist}\n"
+        "\\bib{k1}{article}{author={A. Smith}, title={AMS Title}, year={2022}}\n"
+        "\\end{biblist}\\end{bibdiv}\n",
+        encoding="utf-8",
+    )
+    entries = parse_bbl_file(ams_bbl)
+    assert len(entries) == 1
+    assert entries[0]["citation_key"] == "k1"
+    assert entries[0]["title"] == "AMS Title"
+    assert entries[0]["year"] == 2022
+
+    weird_dir = tmp_path / "weird"
+    weird_dir.mkdir()
+    weird_bbl = weird_dir / "custom.bbl"
+    weird_bbl.write_text("Custom non-standard bibliography format without bibitem", encoding="utf-8")
+    assert convert_bbl_to_bib(weird_dir) == []
+    assert not (weird_dir / "refs.bib").exists()
+    assert weird_bbl.is_file()
