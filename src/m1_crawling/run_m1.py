@@ -167,6 +167,21 @@ def run_discovery(args: argparse.Namespace, paths: Paths, contact: str) -> None:
 def _ratio(num: float, den: float) -> float | None:
     return round(num / den, 4) if den else None
 
+def _read_discovery_peak_ram(paths: Paths, name: str) -> float | None:
+    """Đọc RAM đỉnh do discovery.py tự đo (ru_maxrss/peak_wset) để đối chiếu với Profiler.
+
+    Returns:
+        RAM đỉnh (MB), hoặc None nếu không có báo cáo (ví dụ khi --skip_discovery).
+    """
+    report = paths.report("discovery_full", name)
+    if not report.exists():
+        return None
+    try:
+        data = json.loads(report.read_text(encoding="utf-8"))
+        return data["ram_mb"]["peak_final_mb"]
+    except (OSError, ValueError, KeyError, TypeError):
+        logger.warning("Khong doc duoc RAM dinh tu %s", report)
+        return None
 
 def build_stats(
     args: argparse.Namespace,
@@ -194,7 +209,10 @@ def build_stats(
             "avg_size_before_bytes_per_paper": _ratio(crawl_summary["size_before_bytes"], n_papers),
             "avg_size_after_bytes_per_paper": _ratio(crawl_summary["size_after_bytes"], n_papers),
         }
+    # wall_seconds đã gồm discovery; phần crawl (arXiv || S2) là phần còn lại.
+    crawl_wall = max(wall_seconds - (discovery_seconds or 0.0), 0.0)
     sequential = sum(stage.seconds for stage in stages.values())
+    discovery_peak_ram = _read_discovery_peak_ram(paths, args.name)
     return {
         "name": args.name,
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
@@ -215,9 +233,14 @@ def build_stats(
         "profile": profile,
         "pipeline": {
             "wall_seconds": round(wall_seconds, 1),
+            "wall_seconds_excl_discovery": round(crawl_wall, 1),
+            "avg_wall_seconds_per_paper_excl_discovery": _ratio(crawl_wall, n_papers),
             "stage_seconds": {name: round(stage.seconds, 1) for name, stage in stages.items()},
             # Nếu hai luồng chạy nối đuôi thì mất tổng thời gian của chúng; phần chênh là phần được giấu.
-            "seconds_saved_by_overlap": round(max(sequential - wall_seconds, 0.0), 1),
+            "seconds_saved_by_overlap": round(max(sequential - crawl_wall, 0.0), 1),
+            # Profiler nay đã gồm discovery; số tự đo của discovery.py dùng để đối chiếu chéo.
+            "discovery_peak_ram_mb": discovery_peak_ram,
+            "peak_ram_mb_system": max(profile["peak_ram_mb"], discovery_peak_ram or 0.0),
             "errors": {name: repr(stage.error) for name, stage in stages.items() if stage.error},
         },
     }
@@ -266,6 +289,10 @@ def run_pipeline(
 ) -> int:
     """Chạy discovery (nếu cần) rồi hai luồng arXiv và S2 song song, sau đó xuất thống kê.
 
+    Profiler bao trùm CẢ discovery: ``discovery.py`` là tiến trình con nên RSS của nó được
+    cộng vào mẫu RAM, và ``wall_seconds`` của Profiler là thời gian end-to-end cả hệ thống
+    (đề yêu cầu tính tổng RAM/thời gian của toàn hệ thống khi có nhiều chương trình).
+
     ``fetcher`` và ``s2_client`` cho phép test truyền bản giả, không cần mạng.
 
     Returns:
@@ -276,35 +303,35 @@ def run_pipeline(
     paths.reports.mkdir(parents=True, exist_ok=True)
     wall_start = time.monotonic()
 
-    discovery_seconds: float | None = None
-    if not args.skip_discovery:
-        started = time.monotonic()
-        run_discovery(args, paths, contact)
-        discovery_seconds = time.monotonic() - started
-        logger.info("Discovery xong sau %.0fs", discovery_seconds)
-    if not paths.discovery.exists():
-        print(f"LOI: khong thay file discovery {paths.discovery}", file=sys.stderr)
-        return EXIT_BAD_INPUT
-
-    id_start, id_end = args.id_start, args.id_end
-    if args.ranges:
-        ranges = read_ranges(args.ranges)
-        id_start, id_end = ranges[0][0], max(end for _, end in ranges)
-    papers = crawler.select_papers(paths.discovery, id_start, id_end, args.limit)
-    if not papers:
-        print("LOI: khong co bai nao trong dai ID.", file=sys.stderr)
-        return EXIT_BAD_INPUT
-    logger.info(_eta_line(papers, args.delay))
-
-    fetcher = fetcher or crawler.PoliteFetcher(
-        crawler.USER_AGENT.format(contact=contact), args.delay
-    )
-    s2_client = s2_client or s2_api.S2Client(s2_api.S2Settings.from_config(args.config))
-    arxiv_ids = [row["arxiv_id"] for row in papers]
     stages = {"arxiv": Stage("arxiv"), "s2": Stage("s2")}
     interrupted = False
+    discovery_seconds: float | None = None
+    id_start, id_end = args.id_start, args.id_end
 
     with Profiler(watch_dir=paths.out_dir) as prof:
+        if not args.skip_discovery:
+            started = time.monotonic()
+            run_discovery(args, paths, contact)
+            discovery_seconds = time.monotonic() - started
+            logger.info("Discovery xong sau %.0fs", discovery_seconds)
+        if not paths.discovery.exists():
+            print(f"LOI: khong thay file discovery {paths.discovery}", file=sys.stderr)
+            return EXIT_BAD_INPUT
+
+        if args.ranges:
+            ranges = read_ranges(args.ranges)
+            id_start, id_end = ranges[0][0], max(end for _, end in ranges)
+        papers = crawler.select_papers(paths.discovery, id_start, id_end, args.limit)
+        if not papers:
+            print("LOI: khong co bai nao trong dai ID.", file=sys.stderr)
+            return EXIT_BAD_INPUT
+        logger.info(_eta_line(papers, args.delay))
+
+        fetcher = fetcher or crawler.PoliteFetcher(
+            crawler.USER_AGENT.format(contact=contact), args.delay
+        )
+        s2_client = s2_client or s2_api.S2Client(s2_api.S2Settings.from_config(args.config))
+        arxiv_ids = [row["arxiv_id"] for row in papers]
 
         def on_s2_result(result: s2_api.CrawlResult, seconds: float) -> None:
             # Bài skipped (đã xong ở lần chạy trước) không tốn mạng: không đưa vào trung bình.
@@ -377,7 +404,8 @@ def _print_report(stats: dict, paths: Paths, name: str) -> None:
               f"{stats['crawl_rates'].get('version_ok_rate')}")
     print(f"S2: {s2['statuses']} | ref TB/bai: {s2['avg_refs_per_paper']} | "
           f"ti le ref co arXiv ID: {s2['arxiv_id_rate']}")
-    print(f"RAM dinh/TB: {prof['peak_ram_mb']:.0f}/{prof['avg_ram_mb']:.0f} MB | "
+    print(f"RAM dinh/TB: {prof['peak_ram_mb']:.0f}/{prof['avg_ram_mb']:.0f} MB "
+          f"(dinh toan he thong gom discovery.py tu do: {pipe['peak_ram_mb_system']:.0f} MB) | "
           f"dia max/cuoi: {prof['max_disk_mb']}/{prof['final_disk_mb']} MB")
     for name_, error in pipe["errors"].items():
         print(f"LOI luong {name_}: {error}")

@@ -1,7 +1,7 @@
 import io, json, tarfile, threading, time
 from types import SimpleNamespace
 import pytest
-from src.common.utils_io import read_json
+from src.common.utils_io import read_json, write_json
 from src.m1_crawling import crawler, run_m1, s2_api
 
 TEX = b"\\documentclass{article}\n\\begin{document}\nHi.\n\\end{document}\n"
@@ -96,3 +96,40 @@ def test_validation():
     assert "kaggle" in run_m1._validate(ns, "a@b.c")
     ns.skip_discovery = True
     assert run_m1._validate(ns, None) and run_m1._validate(ns, "a@b.c") is None
+
+def test_discovery_runs_inside_profiler_and_system_peak_ram_is_reported(tmp_path, monkeypatch):
+    a, s, f, c = prep(tmp_path)
+
+    def fake_discovery(args_, paths, contact):
+        time.sleep(0.3)  # giả lập discovery tốn thời gian
+        write_json(
+            paths.report("discovery_full", args_.name), {"ram_mb": {"peak_final_mb": 4321.0}}
+        )
+
+    monkeypatch.setattr(run_m1, "run_discovery", fake_discovery)
+
+    code = run_m1.run_pipeline(
+        args(tmp_path, skip_discovery=False), "a@b.c", fetcher=f, s2_client=c
+    )
+
+    assert code == 0
+    st = read_json(tmp_path / "rep" / "summary_stats_t.json")
+    prof = read_json(tmp_path / "rep" / "profile_m1_t.json")
+    assert st["discovery_seconds"] >= 0.3
+    # Wall time của Profiler nay phải gồm cả discovery.
+    assert prof["wall_seconds"] >= st["discovery_seconds"]
+    assert st["pipeline"]["discovery_peak_ram_mb"] == 4321.0
+    assert st["pipeline"]["peak_ram_mb_system"] >= 4321.0
+    assert (
+        st["pipeline"]["wall_seconds_excl_discovery"] <= st["pipeline"]["wall_seconds"] - 0.1
+    )
+
+
+def test_system_peak_ram_without_discovery_report_falls_back_to_profiler(tmp_path):
+    a, s, f, c = prep(tmp_path)
+
+    run_m1.run_pipeline(args(tmp_path), "a@b.c", fetcher=f, s2_client=c)  # --skip_discovery
+
+    st = read_json(tmp_path / "rep" / "summary_stats_t.json")
+    assert st["pipeline"]["discovery_peak_ram_mb"] is None
+    assert st["pipeline"]["peak_ram_mb_system"] == st["profile"]["peak_ram_mb"]
