@@ -54,12 +54,20 @@ _BARE_URL_RE = re.compile(r"https?://[^\s{}<>\"']+", re.IGNORECASE)
 
 _BIBINFO_RE = re.compile(r"\\(?:bibinfo|bibfield)\s*\{([^{}]+)\}\s*\{", re.IGNORECASE)
 _EMPHASIS_START_RE = re.compile(
-    r"\\(?:emph|textit|textbf|textsc|texttt|textrm|textsf|underline)\s*\{",
+    r"\\(?:emph|textit)\s*\{",
     re.IGNORECASE,
 )
-_TEX_EM_START_RE = re.compile(r"\{\s*\\(?:em|it|bf|sl|sc)\s+", re.IGNORECASE)
+_TEX_EM_START_RE = re.compile(r"\{\s*\\(?:em|it)\s+", re.IGNORECASE)
 _FORMAT_START_RE = re.compile(
     r"\\(?:emph|textit|textbf|textsc|texttt|textrm|textsf|underline|mbox|url)\s*\{",
+    re.IGNORECASE,
+)
+_QUOTED_TITLE_RE = re.compile(
+    r"(?:``|\"|“|\\enquote\{)(?P<title>[^\"”\n{}]+?)(?:''|\"|”|\})",
+    re.DOTALL,
+)
+_CITE_RE = re.compile(
+    r"\\(?:[a-zA-Z]*cite[a-zA-Z]*|nocite)\s*(?:\[[^\]]*\]\s*)*\{([^{}]+)\}",
     re.IGNORECASE,
 )
 _COMMAND_RE = re.compile(r"\\[A-Za-z@]+\*?")
@@ -195,10 +203,15 @@ def _latex_to_text(text: str, *, strip_period: bool = True) -> str:
         text = text[: match.start()] + inner + text[end:]
 
     text = re.sub(r"\\\\(?:\[[^\]]*\])?", " ", text)
+    # Tạm thay \{ và \} bằng placeholder để không bị xóa cùng grouping braces {}
+    text = text.replace(r"\{", "\x01").replace(r"\}", "\x02")
     for latex, plain in _LATEX_ESCAPES.items():
-        text = text.replace(latex, plain)
+        if latex not in (r"\{", r"\}"):
+            text = text.replace(latex, plain)
     text = _COMMAND_RE.sub(" ", text)
-    text = text.replace("{", " ").replace("}", " ")
+    # Bóc ngoặc nhọn nhóm TeX mà KHÔNG chèn khoảng trắng (tránh biến {V}ariational thành "V ariational")
+    text = text.replace("{", "").replace("}", "")
+    text = text.replace("\x01", "{").replace("\x02", "}")
     text = re.sub(r"\s+", " ", text)
     return text.strip(" \t\r\n,;." if strip_period else " \t\r\n,;")
 
@@ -387,10 +400,53 @@ def _split_plain(raw: str) -> tuple[str, str, str]:
         return parts[0], parts[1], " ".join(parts[2:])
     
     if len(parts) == 2:  # cắt tại chữ viết tắt cuối cùng của danh sách tác giả
-        m = re.match(r"^(.*\b[A-Z]\.)\s+(\S.*)$", parts[0], re.S)
+        m = re.match(r"^(.*\b[A-Z]\.)\s+(\S.*)$", parts[0], re.DOTALL)
         if m:
             return m[1], m[2], parts[1]
     return "", raw, ""
+
+
+def _is_valid_title(
+    title: str | None,
+    authors: list[str] | None = None,
+    journal: str | None = None,
+) -> bool:
+    """Kiểm tra xem chuỗi có thực sự là tiêu đề hợp lệ hay không.
+
+    Loại bỏ các trường hợp trích nhầm số volume/trang (ví dụ "123", "595"),
+    năm xuất bản ("2023"), URL, tên tác giả, hoặc tên tạp chí/venue.
+    """
+    if not title:
+        return False
+    t = title.strip()
+    if len(t) < 2:
+        return False
+    # Thuần chữ số hoặc số kèm dấu ngắt (volume, pages, issue)
+    if re.fullmatch(r"[\d\s\(\)\-\–\:\,\.]+", t):
+        return False
+    # Năm 4 chữ số (ví dụ "2023", "2023a")
+    if re.fullmatch(r"(?:18|19|20|21)\d{2}[a-z]?", t, re.IGNORECASE):
+        return False
+    # URL hoặc DOI
+    if re.match(r"^(?:https?://|www\.|doi\s*:|10\.\d{4,9}/)", t, re.IGNORECASE):
+        return False
+    # Từ viết tắt tập san/trang/thể loại
+    if t.lower() in {"pp", "p", "page", "pages", "vol", "volume", "no", "number", "ibid", "al", "et al", "others"}:
+        return False
+    # Trùng lặp với tác giả
+    if authors:
+        t_folded = re.sub(r"[^\w]+", "", t.casefold(), flags=re.UNICODE)
+        for a in authors:
+            a_folded = re.sub(r"[^\w]+", "", a.casefold(), flags=re.UNICODE)
+            if t_folded and t_folded == a_folded:
+                return False
+    # Trùng lặp hoặc chứa tên tạp chí (ví dụ REVTeX "Physical review letters 123")
+    if journal:
+        j_clean = re.sub(r"[^\w]+", "", journal.casefold(), flags=re.UNICODE)
+        t_clean = re.sub(r"[^\w]+", "", t.casefold(), flags=re.UNICODE)
+        if j_clean and (j_clean in t_clean or t_clean in j_clean):
+            return False
+    return True
 
 
 def _parse_entry(citation_key: str, raw_text: str, entry_type: str = "misc") -> dict:
@@ -404,18 +460,29 @@ def _parse_entry(citation_key: str, raw_text: str, entry_type: str = "misc") -> 
     journal = _latex_to_text(bibinfo.get("journal", "")) or None
 
     emphasis = _find_emphasis(raw_text)
-    if _APA_RE.match(raw_text):  # APA: chữ nghiêng là venue, không phải title
+    quoted = _QUOTED_TITLE_RE.search(raw_text)
+
+    if bibinfo.get("title"):
+        title = _latex_to_text(bibinfo["title"]) or None
+        authors_prefix = ""
+        suffix = raw_text
+    elif quoted is not None:
+        title = _latex_to_text(quoted.group("title")) or None
+        authors_prefix = raw_text[: quoted.start()]
+        suffix = raw_text[quoted.end() :]
+    elif _APA_RE.match(raw_text):  # APA: chữ nghiêng là venue, không phải title
         authors_prefix, plain_title, suffix = _split_plain(raw_text)
         title = _latex_to_text(plain_title) or None
     elif emphasis is not None:
         inner, start, end = emphasis
-        title = _latex_to_text(inner) or None
-        authors_prefix = raw_text[:start]
-        suffix = raw_text[end:]
-    elif bibinfo.get("title"):
-        title = _latex_to_text(bibinfo["title"]) or None
-        authors_prefix = ""
-        suffix = raw_text
+        candidate_title = _latex_to_text(inner) or None
+        if candidate_title and _is_valid_title(candidate_title):
+            title = candidate_title
+            authors_prefix = raw_text[:start]
+            suffix = raw_text[end:]
+        else:
+            authors_prefix, title_text, suffix = _split_plain(raw_text)
+            title = _latex_to_text(title_text) or None
     else:
         authors_prefix, title_text, suffix = _split_plain(raw_text)
         if not authors_prefix and not suffix:
@@ -431,6 +498,9 @@ def _parse_entry(citation_key: str, raw_text: str, entry_type: str = "misc") -> 
     authors = _authors_from_text(bibinfo.get("author") or authors_prefix)
     if journal is None:
         journal = _journal_from_suffix(suffix)
+
+    if title and not _is_valid_title(title, authors, journal):
+        title = None
 
     return {
         "citation_key": citation_key.strip(),
@@ -514,6 +584,18 @@ def _entry_from_bib_fields(citation_key: str, fields: dict[str, str], entry_type
     doi = _clean_doi(fields.get("doi", "")) or _find_doi(fields.get("url", ""))
     url = _as_optional(fields.get("url"))
 
+    eprint_val = fields.get("eprint")
+    if eprint_val:
+        eprint_clean = re.sub(
+            r"^(?:arXiv:\s*|https?://arxiv\.org/abs/)", "", eprint_val.strip(), flags=re.IGNORECASE
+        )
+        if not url:
+            url = f"https://arxiv.org/abs/{eprint_clean}"
+        if not journal:
+            journal = f"arXiv:{eprint_clean}"
+        elif "arxiv" not in journal.lower():
+            journal = f"{journal}, arXiv:{eprint_clean}"
+
     return {
         "citation_key": citation_key.strip(),
         "entry_type": entry_type or "misc",
@@ -526,36 +608,60 @@ def _entry_from_bib_fields(citation_key: str, fields: dict[str, str], entry_type
     }
 
 
-def parse_bib_file(path: str | Path) -> list[dict]:
+def _read_file(path: Path) -> str:
+    """Đọc file văn bản với fallback latin-1 và chuẩn hóa ngắt dòng."""
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def extract_cited_keys(latex: str) -> set[str]:
+    """Trích xuất tất cả các citation keys được sử dụng trong văn bản LaTeX.
+
+    Tìm trong các macro \\cite, \\citep, \\citet, \\nocite, \\autocite, v.v.
+    """
+    if not latex:
+        return set()
+    source = _strip_comments(latex)
+    keys: set[str] = set()
+    for match in _CITE_RE.finditer(source):
+        raw_keys = match.group(1)
+        for k in raw_keys.split(","):
+            k = k.strip()
+            if k and not k.startswith("%"):
+                keys.add(k)
+    return keys
+
+
+def parse_bib_file(path: str | Path, filter_keys: set[str] | None = None) -> list[dict]:
     """Đọc một file ``.bib`` và trả về danh sách entry đã chuẩn hóa.
 
     Args:
         path: Đường dẫn file ``.bib``.
+        filter_keys: Tập các citation_key cần lấy (bỏ qua các entry khác để tối ưu tốc độ).
 
     Returns:
         Danh sách entry theo thứ tự trong file. Entry ``@comment``/``@string``/
         ``@preamble`` bị bỏ qua.
     """
-    bib_path = Path(path)
-    raw = bib_path.read_bytes()
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        text = raw.decode("latin-1")
-    text = _strip_comments(text)
+    text = _read_file(Path(path))
 
     entries: list[dict] = []
-    position = 0
-    while match := _ENTRY_START_RE.search(text, position):
+    for match in _ENTRY_START_RE.finditer(text):
         entry_type = match.group("type").lower()
-        open_char = match.group("open")
-        close_char = "}" if open_char == "{" else ")"
-        body, end = _read_delimited(text, match.end("open"), open_char, close_char)
-        position = max(end, match.end())
         if entry_type in {"comment", "string", "preamble"}:
             continue
-        fields = _parse_bib_fields(body)
-        entries.append(_entry_from_bib_fields(match.group("key"), fields, entry_type))
+        key = match.group("key").strip()
+        if filter_keys is not None and key not in filter_keys:
+            continue
+        open_char = match.group("open")
+        close_char = "}" if open_char == "{" else ")"
+        body, _ = _read_delimited(text, match.end("open"), open_char, close_char)
+        fields = _parse_bib_fields(_strip_comments(body))
+        entries.append(_entry_from_bib_fields(key, fields, entry_type))
     return entries
 
 
@@ -586,7 +692,7 @@ def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[di
 
     Args:
         latex: Chuỗi LaTeX đã gộp.
-        version_dir: Thư mục nguồn của version (chứa ``main.tex`` và ``refs.bib``).
+        version_dir: Thư mục nguồn của version (chứa ``main.tex`` và ``refs.bib``...).
             ``None`` thì chỉ đọc ``\\bibitem``.
 
     Returns:
@@ -596,9 +702,35 @@ def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[di
     if version_dir is None:
         return entries
 
-    for bib_path in _find_bib_files(latex, Path(version_dir)):
-        entries.extend(parse_bib_file(bib_path))
-    return entries
+    vdir = Path(version_dir)
+    # 1. Đọc các file .bib
+    cited_keys = extract_cited_keys(latex) if latex else None
+    filter_keys = cited_keys if (cited_keys and r"\nocite{*}" not in (latex or "")) else None
+    for bib_path in _find_bib_files(latex, vdir):
+        entries.extend(parse_bib_file(bib_path, filter_keys=filter_keys))
+
+    # 2. Fallback: Nếu vẫn chưa có entry nào, quét các file .tex khác trong version_dir
+    if not entries and vdir.is_dir():
+        for tex_path in sorted(vdir.rglob("*.tex")):
+            try:
+                tex_content = _read_file(tex_path)
+                if r"\bibitem" in tex_content:
+                    found = extract_bibitems(tex_content)
+                    if found:
+                        entries.extend(found)
+                        break
+            except (OSError, UnicodeDecodeError) as exc:
+                logger.debug("%s: lỗi đọc file fallback %s: %s", vdir, tex_path, exc)
+
+    # Khử trùng lặp theo citation_key giữ thứ tự xuất hiện đầu tiên
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for e in entries:
+        k = e.get("citation_key")
+        if k and k not in seen:
+            seen.add(k)
+            unique.append(e)
+    return unique
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +793,7 @@ def write_bibtex(entries: list[dict], path: str | Path) -> None:
 __all__ = [
     "extract_bibitems",
     "extract_bibtex",
+    "extract_cited_keys",
     "format_bibtex_entry",
     "parse_bib_file",
     "write_bibtex",

@@ -246,3 +246,85 @@ def test_author_parsing_variants(raw_authors, expected):
         "\\end{thebibliography}\n"
     )
     assert extract_bibitems(latex)[0]["authors"] == expected
+
+
+def test_braced_capital_letters_not_split():
+    latex = (
+        "\\begin{thebibliography}{9}\n"
+        "\\bibitem{k} A. Author, \\emph{{V}ariational {A}utoencoders and {BERT}}, 2020.\n"
+        "\\end{thebibliography}\n"
+    )
+    entries = extract_bibitems(latex)
+    assert entries[0]["title"] == "Variational Autoencoders and BERT"
+
+
+def test_volume_number_not_extracted_as_title():
+    latex = (
+        "\\begin{thebibliography}{9}\n"
+        "\\bibitem{revtex}\n"
+        "\\bibinfo{author}{\\bibfnamefont{A.~M.} \\bibnamefont{Childs}},\n"
+        "\\bibinfo{journal}{Physical review letters} \\textbf{\\bibinfo{volume}{123}},\n"
+        "\\bibinfo{pages}{050503} (\\bibinfo{year}{2019}).\n"
+        "\\end{thebibliography}\n"
+    )
+    entries = extract_bibitems(latex)
+    assert entries[0]["title"] is None
+    assert entries[0]["journal"] == "Physical review letters"
+    assert entries[0]["year"] == 2019
+
+
+def test_quoted_title_extracted_correctly():
+    latex = (
+        "\\begin{thebibliography}{9}\n"
+        "\\bibitem{quote} A. Vaswani et al., ``Attention is all you need'', \\textit{NeurIPS}, 2017.\n"
+        "\\end{thebibliography}\n"
+    )
+    entries = extract_bibitems(latex)
+    assert entries[0]["title"] == "Attention is all you need"
+    assert entries[0]["journal"] == "NeurIPS"
+    assert entries[0]["year"] == 2017
+
+
+def test_bib_file_with_eprint_populates_arxiv_id(tmp_path):
+    bib = tmp_path / "eprint.bib"
+    bib.write_text(
+        "@article{bert,\n"
+        "  title = {BERT},\n"
+        "  author = {J. Devlin},\n"
+        "  year = {2018},\n"
+        "  eprint = {1810.04805},\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    entries = parse_bib_file(bib)
+    assert entries[0]["url"] == "https://arxiv.org/abs/1810.04805"
+    assert "1810.04805" in entries[0]["journal"]
+
+
+def test_parse_bib_file_filters_by_cited_keys(tmp_path):
+    bib = tmp_path / "multi.bib"
+    bib.write_text(
+        "@article{cited1, title = {Cited 1}, author = {A. One}, year = {2020}}\n"
+        "@article{uncited, title = {Uncited}, author = {B. Two}, year = {2021}}\n"
+        "@article{cited2, title = {Cited 2}, author = {C. Three}, year = {2022}}\n",
+        encoding="utf-8",
+    )
+    entries = parse_bib_file(bib, filter_keys={"cited1", "cited2"})
+    assert [e["citation_key"] for e in entries] == ["cited1", "cited2"]
+
+
+def test_extract_bibtex_fallback_other_tex(tmp_path):
+    version_dir = tmp_path / "v1"
+    version_dir.mkdir()
+    other_tex = version_dir / "refs_standalone.tex"
+    other_tex.write_text(
+        "\\begin{thebibliography}{9}\n"
+        "\\bibitem{from_other} Other Author, \\emph{Standalone Title}, 2024.\n"
+        "\\end{thebibliography}\n",
+        encoding="utf-8",
+    )
+    # LaTeX đã gộp không có bibitem, nhưng version_dir có refs_standalone.tex
+    entries = extract_bibtex("Some text without bibitems", version_dir)
+    assert [e["citation_key"] for e in entries] == ["from_other"]
+    assert entries[0]["title"] == "Standalone Title"
+

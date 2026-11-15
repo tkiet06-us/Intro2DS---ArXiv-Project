@@ -203,3 +203,12 @@ def test_folder_to_merged_string(tmp_path):
     assert "INTRO_TEXT" in out
     assert "METHOD_TEXT" in out
     assert "UNUSED_TEXT" not in out
+
+
+def test_find_main_tex_prefers_tex_with_bibliography(tmp_path):
+    # File dữ liệu bảng rất dài nhưng không có thư mục tham khảo
+    _write(tmp_path, "catalogue.tex", "\\documentclass{article}\n\\begin{document}\n" + "x" * 5000 + "\n\\end{document}\n")
+    # File bài báo ngắn hơn nhưng có chứa \bibliography hoặc \bibitem
+    _write(tmp_path, "paper.tex", "\\documentclass{article}\n\\begin{document}\n\\bibliography{refs}\n\\end{document}\n")
+    main = find_main_tex(str(tmp_path))
+    assert main.name == "paper.tex"

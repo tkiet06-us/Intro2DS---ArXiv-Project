@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 _COMMENT_LINE = re.compile(r"^((?:[^%\\\n]|\\.)*)%.*$", re.MULTILINE)
 _DOCUMENTCLASS = re.compile(r"\\documentclass\b")
 _BEGIN_DOCUMENT = re.compile(r"\\begin\{document\}")
+_BIB_HINT = re.compile(
+    r"\\(?:bibliography|addbibresource|bibitem|begin\s*\{\s*thebibliography\s*\})\b",
+    re.IGNORECASE,
+)
 # \input{a}, \include{a}, \subfile{a} hoặc dạng không ngoặc "\input a.tex".
 _INCLUDE = re.compile(r"\\(?:input|include|subfile)(?![A-Za-z])\s*(?:\{([^{}]+)\}|([^\s{}\\]+))")
 
@@ -105,6 +109,7 @@ def find_main_tex(src_dir: str | Path) -> Path:
         path, text = item
         return (
             not _BEGIN_DOCUMENT.search(text),  # False (có document) xếp trước
+            not bool(_BIB_HINT.search(text)),  # False (chứa dấu hiệu bibliography) xếp trước
             path.stem in included,
             len(path.relative_to(root.resolve()).parts),
             -len(text),
