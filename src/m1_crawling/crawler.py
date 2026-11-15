@@ -623,17 +623,22 @@ class PoliteFetcher:
                         return FetchResult(status, b"", None, attempt, self._clock() - started)
                     if status in (200, 206):
                         total: int | None = None
+                        # Body đã được giải nén thì Content-Length (số byte nén) không so được.
+                        encoding = str(
+                            response.headers.get("Content-Encoding", "") or "identity"
+                        ).lower()
+                        is_raw = encoding == "identity"
                         if status == 200:
                             partial.clear()  # server gửi lại từ đầu
                             length = response.headers.get("Content-Length", "")
-                            total = int(length) if length.isdigit() else None
+                            total = int(length) if length.isdigit() and is_raw else None
                         else:
                             crange = response.headers.get("Content-Range", "")
                             if not crange.startswith(f"bytes {len(partial)}-"):
                                 partial.clear()
                                 raise requests.exceptions.ChunkedEncodingError("Content-Range lech")
                             tail = crange.rsplit("/", 1)[-1]
-                            total = int(tail) if tail.isdigit() else None
+                            total = int(tail) if tail.isdigit() and is_raw else None
                         for chunk in response.iter_content(chunk_size=1 << 16):
                             partial.extend(chunk)  # lưu dần, đứt giữa chừng vẫn còn
                             if len(partial) > MAX_DOWNLOAD_BYTES:
