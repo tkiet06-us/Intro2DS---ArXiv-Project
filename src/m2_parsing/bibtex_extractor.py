@@ -514,7 +514,7 @@ def _entry_from_bib_fields(citation_key: str, fields: dict[str, str], entry_type
     authors = _authors_from_text(fields.get("author") or fields.get("editor") or "")
     title = _latex_to_text(fields.get("title", "")) or None
     journal = _latex_to_text(fields.get("journal") or fields.get("booktitle") or "") or None
-    year_text = fields.get("year", "")
+    year_text = fields.get("year") or fields.get("date") or ""
     year_match = _YEAR_RE.search(year_text) if year_text else None
     year = int(year_match.group(1)) if year_match else None
     doi = _clean_doi(fields.get("doi", "")) or _find_doi(fields.get("url", ""))
@@ -685,10 +685,18 @@ def convert_bbl_to_bib(
     for bbl_path in _find_bbl_files(vdir):
         entries.extend(parse_bbl_file(bbl_path))
 
-    if entries:
-        target = Path(out_bib_path) if out_bib_path is not None else (vdir / "refs.bib")
-        write_bibtex(entries, target)
-    return entries
+        if entries:
+            if out_bib_path is not None:
+                target = Path(out_bib_path)
+            else:
+                target = vdir / "refs.bib"
+                if target.exists():
+                    logger.warning(
+                        "%s: đã có refs.bib nguồn, không ghi đè bằng bản convert từ .bbl.", vdir
+                    )
+                    return entries
+            write_bibtex(entries, target)
+        return entries
 
 
 # ---------------------------------------------------------------------------

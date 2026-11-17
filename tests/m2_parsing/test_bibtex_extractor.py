@@ -296,3 +296,84 @@ def test_parse_bbl_supports_amsrefs_and_keeps_unparseable_bbl(tmp_path):
     assert convert_bbl_to_bib(weird_dir) == []
     assert not (weird_dir / "refs.bib").exists()
     assert weird_bbl.is_file()
+
+
+def test_amsrefs_date_field_gives_year(tmp_path):
+    bbl = tmp_path / "a.bbl"
+    bbl.write_text(
+        "\\begin{biblist}\n"
+        "\\bib{k1}{article}{\n"
+        "  author={A. Smith and B. Jones},\n"
+        "  title={AMS Title},\n"
+        "  journal={J. Tests},\n"
+        "  date={2022-05},\n"
+        "}\n"
+        "\\end{biblist}\n"
+    )
+    entries = parse_bbl_file(bbl)
+    assert entries[0]["year"] == 2022
+
+
+def _write_amsrefs_bbl(tmp_path, date_line):
+    path = tmp_path / "a.bbl"
+    path.write_text(
+        "\\begin{biblist}\n"
+        "\\bib{k1}{article}{\n"
+        "  author={A. Smith and B. Jones},\n"
+        "  title={AMS Title},\n"
+        "  journal={J. Tests},\n"
+        f"{date_line}"
+        "}\n"
+        "\\end{biblist}\n"
+    )
+    return path
+
+
+def test_amsrefs_date_with_month_gives_year(tmp_path):
+    bbl = _write_amsrefs_bbl(tmp_path, "  date={2022-05},\n")
+    assert parse_bbl_file(bbl)[0]["year"] == 2022
+
+
+def test_amsrefs_date_year_only_gives_year(tmp_path):
+    bbl = _write_amsrefs_bbl(tmp_path, "  date={2022},\n")
+    assert parse_bbl_file(bbl)[0]["year"] == 2022
+
+
+def test_amsrefs_without_year_or_date_gives_none(tmp_path):
+    bbl = _write_amsrefs_bbl(tmp_path, "")
+    assert parse_bbl_file(bbl)[0]["year"] is None
+
+
+_BBL = (
+    "\\begin{thebibliography}{1}\n"
+    "\\bibitem{k1} A. Smith, Title, J. Tests, 2022.\n"
+    "\\end{thebibliography}\n"
+)
+
+
+def test_convert_bbl_does_not_overwrite_existing_refs_bib(tmp_path):
+    (tmp_path / "main.bbl").write_text(_BBL)
+    original = "@inproceedings{k1,\n  title = {T},\n  booktitle = {Proc},\n  pages = {1--2}\n}\n"
+    (tmp_path / "refs.bib").write_text(original)
+
+    entries = convert_bbl_to_bib(tmp_path)
+
+    assert entries  # vẫn trả về entry đã convert
+    assert (tmp_path / "refs.bib").read_text() == original
+
+
+def test_convert_bbl_writes_refs_bib_when_absent(tmp_path):
+    (tmp_path / "main.bbl").write_text(_BBL)
+    convert_bbl_to_bib(tmp_path)
+    assert (tmp_path / "refs.bib").is_file()
+
+
+def test_convert_bbl_explicit_out_path_leaves_source_refs_bib_alone(tmp_path):
+    (tmp_path / "main.bbl").write_text(_BBL)
+    (tmp_path / "refs.bib").write_text("orig")
+    out = tmp_path / "converted.bib"
+
+    convert_bbl_to_bib(tmp_path, out)
+
+    assert out.is_file()
+    assert (tmp_path / "refs.bib").read_text() == "orig"
