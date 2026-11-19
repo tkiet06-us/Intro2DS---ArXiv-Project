@@ -350,3 +350,35 @@ def test_latex_accents_converted_to_unicode():
     assert "François" in entries[5]["authors"][0]
 
 
+def test_protect_spans_and_year_regex_avoids_eprint_digits():
+    # R3: Không nhận nhầm năm từ arXiv ID trong \eprint hoặc URL
+    latex = (
+        "\\begin{thebibliography}{9}\n"
+        "\\bibitem{paper} A. Author, \\emph{Deep Learning}, \\eprint{2004.12345}, 2019.\n"
+        "\\end{thebibliography}\n"
+    )
+    entries = extract_bibitems(latex)
+    assert entries[0]["year"] == 2019
+
+
+def test_bibitem_eprint_populates_url_and_journal():
+    # R4: \bibitem có \eprint hoặc arXiv:... bổ sung url và journal giống logic .bib
+    latex = (
+        "\\begin{thebibliography}{9}\n"
+        "\\bibitem{bert} J. Devlin et al., \\emph{BERT}, \\eprint{1810.04805}, 2018.\n"
+        "\\bibitem{gpt} A. Rad et al., \\emph{GPT}, arXiv:2005.14165, 2020.\n"
+        "\\bibitem{venue} C. Chen, \\emph{Vision}, \\textit{CVPR}, \\eprint[arXiv]{2106.00001}, 2021.\n"
+        "\\end{thebibliography}\n"
+    )
+    entries = extract_bibitems(latex)
+    assert entries[0]["url"] == "https://arxiv.org/abs/1810.04805"
+    assert entries[0]["journal"] == "arXiv:1810.04805"
+
+    assert entries[1]["url"] == "https://arxiv.org/abs/2005.14165"
+    assert entries[1]["journal"] == "arXiv:2005.14165"
+
+    assert entries[2]["url"] == "https://arxiv.org/abs/2106.00001"
+    assert entries[2]["journal"] == "CVPR, arXiv:2106.00001"
+
+
+

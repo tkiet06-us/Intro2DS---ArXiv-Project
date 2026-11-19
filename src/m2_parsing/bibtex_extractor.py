@@ -39,7 +39,7 @@ _DOCUMENT_END_RE = re.compile(r"\\end\s*\{\s*document\s*\}", re.IGNORECASE)
 _BIB_RESOURCE_RE = re.compile(r"\\(?:bibliography|addbibresource)\s*\{([^{}]+)\}", re.IGNORECASE)
 
 # Năm 4 chữ số, không dính vào chữ số khác (tránh cắt "20201").
-_YEAR_RE = re.compile(r"(?<!\d)((?:18|19|20|21)\d{2})[a-z]?(?!\d)", re.IGNORECASE)
+_YEAR_RE = re.compile(r"(?<![\d.])((?:18|19|20|21)\d{2})[a-z]?(?!\d|\.\d)", re.IGNORECASE)
 
 _DOI_RE = re.compile(
     r"(?:\bdoi\s*:\s*|https?://(?:dx\.)?doi\.org/|\\doi\s*\{\s*)"
@@ -295,6 +295,7 @@ def _protect_spans(text: str) -> str:
     chars = list(text)
     patterns = (
         re.compile(r"\\(?:url|href)\s*\{[^{}]*\}", re.IGNORECASE),
+        re.compile(r"\\eprint(?:\s*\[[^\]]*\])?\s*\{[^{}]*\}", re.IGNORECASE),
         re.compile(r"https?://[^\s{}<>\"']+", re.IGNORECASE),
         re.compile(r"\\doi\s*\{[^{}]*\}", re.IGNORECASE),
         re.compile(r"\bdoi\s*:\s*10\.\d{4,9}/[^\s{}]+", re.IGNORECASE),
@@ -558,6 +559,28 @@ def _parse_entry(citation_key: str, raw_text: str, entry_type: str = "misc") -> 
     authors = _authors_from_text(bibinfo.get("author") or authors_prefix)
     if journal is None:
         journal = _journal_from_suffix(suffix)
+
+    # Chuẩn hóa eprint / arXiv trong \bibitem nếu có (giống logic .bib)
+    eprint_val = bibinfo.get("eprint")
+    if not eprint_val:
+        eprint_match = re.search(
+            r"(?:\\eprint(?:\s*\[[^\]]*\])?\s*\{([^{}]+)\}|\barXiv:\s*([0-9]{4}\.[0-9]{4,5}(?:v[0-9]+)?|[a-z\-]+(?:\.[a-z]{2})?/[0-9]{7}(?:v[0-9]+)?))",
+            raw_text,
+            re.IGNORECASE,
+        )
+        if eprint_match:
+            eprint_val = eprint_match.group(1) or eprint_match.group(2)
+
+    if eprint_val:
+        eprint_clean = re.sub(
+            r"^(?:arXiv:\s*|https?://arxiv\.org/abs/)", "", eprint_val.strip(), flags=re.IGNORECASE
+        )
+        if not url:
+            url = f"https://arxiv.org/abs/{eprint_clean}"
+        if not journal:
+            journal = f"arXiv:{eprint_clean}"
+        elif "arxiv" not in journal.lower():
+            journal = f"{journal}, arXiv:{eprint_clean}"
 
     if title and not _is_valid_title(title, authors, journal):
         title = None
