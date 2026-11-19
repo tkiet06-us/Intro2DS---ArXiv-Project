@@ -212,3 +212,32 @@ def test_find_main_tex_prefers_tex_with_bibliography(tmp_path):
     _write(tmp_path, "paper.tex", "\\documentclass{article}\n\\begin{document}\n\\bibliography{refs}\n\\end{document}\n")
     main = find_main_tex(str(tmp_path))
     assert main.name == "paper.tex"
+
+
+def test_find_main_tex_begin_document_with_spaces(tmp_path):
+    # Kiểm tra regex _BEGIN_DOCUMENT nhận diện tốt các biến thể có khoảng trắng
+    _write(
+        tmp_path,
+        "paper.tex",
+        "\\documentclass{article}\n\\begin { document }\n\\input{intro}\n\\end{document}\n",
+    )
+    _write(tmp_path, "intro.tex", "\\documentclass{article}\nUnused preamble\n")
+    main = find_main_tex(str(tmp_path))
+    assert main.name == "paper.tex"
+
+
+def test_resolve_includes_nested_directory_relative_input(tmp_path):
+    # main.tex include sections/chapter1.tex, và chapter1.tex include sub_part.tex tương đối với sections/
+    _write(
+        tmp_path,
+        "main.tex",
+        "\\documentclass{article}\n\\begin{document}\n\\input{sections/chapter1}\n\\end{document}\n",
+    )
+    _write(tmp_path, "sections/chapter1.tex", "Chapter 1 start\n\\input{sub_part}\nChapter 1 end\n")
+    _write(tmp_path, "sections/sub_part.tex", "NESTED_SUB_PART_CONTENT\n")
+
+    out = resolve_includes(tmp_path / "main.tex")
+    assert "Chapter 1 start" in out
+    assert "NESTED_SUB_PART_CONTENT" in out
+    assert "Chapter 1 end" in out
+

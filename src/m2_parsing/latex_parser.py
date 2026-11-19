@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Mỗi dòng: gom phần trước dấu % chưa bị escape.
 _COMMENT_LINE = re.compile(r"^((?:[^%\\\n]|\\.)*)%.*$", re.MULTILINE)
 _DOCUMENTCLASS = re.compile(r"\\documentclass\b")
-_BEGIN_DOCUMENT = re.compile(r"\\begin\{document\}")
+_BEGIN_DOCUMENT = re.compile(r"\\begin\s*\{\s*document\s*\}")
 _BIB_HINT = re.compile(
     r"\\(?:bibliography|addbibresource|bibitem|begin\s*\{\s*thebibliography\s*\})\b",
     re.IGNORECASE,
@@ -58,20 +58,28 @@ def _read(path: Path) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _locate(base: Path, name: str) -> Path | None:
-    """Tìm file được include, thử có/không đuôi ``.tex``, tính từ thư mục ``base``.
+def _locate(base: Path, name: str, current_dir: Path | None = None) -> Path | None:
+    """Tìm file được include, thử có/không đuôi ``.tex``, tính từ thư mục ``base``
+    hoặc fallback sang ``current_dir`` (nơi chứa file cha đang gọi include).
 
     Args:
         base: Thư mục chứa file gốc (LaTeX tính đường dẫn tương đối từ đây).
         name: Tên trong ``\\input{...}``.
+        current_dir: Thư mục chứa file hiện tại đang thực hiện include (fallback).
 
     Returns:
         Đường dẫn file tồn tại, hoặc ``None``.
     """
     name = name.strip()
-    for candidate in (base / name, base / f"{name}.tex"):
-        if candidate.is_file():
-            return candidate.resolve()
+    bases = [base]
+    if current_dir is not None:
+        c_res = current_dir.resolve()
+        if c_res != base.resolve():
+            bases.append(current_dir)
+    for b in bases:
+        for candidate in (b / name, b / f"{name}.tex"):
+            if candidate.is_file():
+                return candidate.resolve()
     return None
 
 
@@ -133,7 +141,7 @@ def _expand(path: Path, base: Path, stack: frozenset[Path]) -> str:
 
     def replace(match: re.Match) -> str:
         name = match.group(1) or match.group(2)
-        target = _locate(base, name)
+        target = _locate(base, name, current_dir=path.parent)
         if target is None:
             logger.warning("%s: \\input{%s} trỏ tới file không tồn tại, bỏ qua", path.name, name)
             return " "
