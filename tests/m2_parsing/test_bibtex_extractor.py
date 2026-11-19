@@ -328,3 +328,25 @@ def test_extract_bibtex_fallback_other_tex(tmp_path):
     assert [e["citation_key"] for e in entries] == ["from_other"]
     assert entries[0]["title"] == "Standalone Title"
 
+
+def test_latex_accents_converted_to_unicode():
+    # R5: Chuyển các dấu TeX \"o, \'e, \~n, \v{s}, \c{c}, \H{o} sang Unicode, tránh Peña biến thành "Pe na"
+    latex = (
+        "\\begin{thebibliography}{9}\n"
+        "\\bibitem{godel} K. G\\\"odel, \\emph{On Formally Undecidable Propositions}, 1931.\n"
+        "\\bibitem{rene} Ren\\'e Descartes, \\emph{Discourse on the Method}, 1637.\n"
+        "\\bibitem{pena} F. Pe\\~na, \\emph{Matrix Analysis}, 2015.\n"
+        "\\bibitem{dvorak} A. Dvo\\v{r}\\'{a}k, \\emph{New World Symphony}, 1893.\n"
+        "\\bibitem{erdos} P. Erd\\H{o}s, \\emph{Combinatorics}, 1975.\n"
+        "\\bibitem{cedilla} Fran\\c{c}ois Bourdon, \\emph{Mechanics}, 2010.\n"
+        "\\end{thebibliography}\n"
+    )
+    entries = extract_bibitems(latex)
+    assert "Gödel" in entries[0]["authors"][0]
+    assert "René" in entries[1]["authors"][0]
+    assert "Peña" in entries[2]["authors"][0]
+    assert "Dvořák" in entries[3]["authors"][0]
+    assert "Erdős" in entries[4]["authors"][0]
+    assert "François" in entries[5]["authors"][0]
+
+

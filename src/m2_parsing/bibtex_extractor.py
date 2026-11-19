@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import tempfile
+import unicodedata
 from pathlib import Path
 
 from src.m2_parsing.latex_parser import strip_comments
@@ -79,7 +80,6 @@ _LATEX_ESCAPES = {
     r"\_": "_",
     r"\{": "{",
     r"\}": "}",
-    r"\~": " ",
     r"\ ": " ",
     "~": " ",
     "---": "—",
@@ -181,6 +181,63 @@ def _strip_comments(text: str) -> str:
     return strip_comments(text)
 
 
+_ACCENT_MAP = {
+    '"': "\u0308",  # diaeresis / umlaut (ví dụ \"o -> ö)
+    "'": "\u0301",  # acute (ví dụ \'e -> é)
+    "^": "\u0302",  # circumflex (ví dụ \^o -> ô)
+    "`": "\u0300",  # grave (ví dụ \`e -> è)
+    "~": "\u0303",  # tilde (ví dụ \~n -> ñ)
+    "=": "\u0304",  # macron (ví dụ \=a -> ā)
+    ".": "\u0307",  # dot above (ví dụ \.z -> ż)
+    "c": "\u0327",  # cedilla (ví dụ \c{c} -> ç)
+    "v": "\u030c",  # caron / hacek (ví dụ \v{s} -> š)
+    "H": "\u030b",  # hungarumlaut (ví dụ \H{o} -> ő)
+    "u": "\u0306",  # breve (ví dụ \u{a} -> ă)
+    "r": "\u030a",  # ring above (ví dụ \r{a} -> å)
+    "k": "\u0328",  # ogonek (ví dụ \k{a} -> ą)
+    "d": "\u0323",  # dot below (ví dụ \d{o} -> ọ)
+    "b": "\u0331",  # macron below
+}
+
+_SPECIAL_LATEX_MACROS = {
+    r"\ss": "ß",
+    r"\ae": "æ",
+    r"\oe": "œ",
+    r"\aa": "å",
+    r"\o": "ø",
+    r"\l": "ł",
+    r"\AE": "Æ",
+    r"\OE": "Œ",
+    r"\AA": "Å",
+    r"\O": "Ø",
+    r"\L": "Ł",
+}
+
+_ACCENT_RE = re.compile(
+    r"""\\(?:(["'^`~=.])\s*\{?\s*([a-zA-Z]|\\[ij]\b)\s*\}?|([cvHu rkdb])\s*\{\s*([a-zA-Z]|\\[ij]\b)\s*\}|([cvHu rkdb])\s+([a-zA-Z]))"""
+)
+
+
+def _replace_latex_accents(text: str) -> str:
+    """Chuyển các macro dấu TeX và ký tự đặc biệt sang ký tự Unicode tương ứng."""
+    for macro, char in _SPECIAL_LATEX_MACROS.items():
+        text = re.sub(re.escape(macro) + r"(?![a-zA-Z])\s*", char, text)
+    text = re.sub(r"\\([ij])\b", r"\1", text)
+
+    def sub_accent(m: re.Match) -> str:
+        accent_char = m.group(1) or m.group(3) or m.group(5)
+        base_char = m.group(2) or m.group(4) or m.group(6)
+        if base_char.startswith("\\"):
+            base_char = base_char[1:]
+        combining = _ACCENT_MAP.get(accent_char)
+        if combining:
+            return unicodedata.normalize("NFC", base_char + combining)
+        return base_char
+
+    text = _ACCENT_RE.sub(sub_accent, text)
+    return unicodedata.normalize("NFC", text)
+
+
 def _latex_to_text(text: str, *, strip_period: bool = True) -> str:
     """Chuyển các macro định dạng thường gặp và escape TeX thành văn bản đọc được.
 
@@ -189,6 +246,9 @@ def _latex_to_text(text: str, *, strip_period: bool = True) -> str:
         strip_period: Xóa dấu chấm cuối (đúng cho title/journal). Với tên tác giả phải
             giữ lại vì ``J.``/``A.`` là viết tắt, không phải dấu hết câu.
     """
+    # Tiền xử lý các ký tự có dấu TeX sang Unicode trước khi strip commands
+    text = _replace_latex_accents(text)
+
     # \bibinfo{field}{value}: giữ value, bỏ tên field (IEEEtran hay dùng).
     while match := _BIBINFO_RE.search(text):
         value, end = _read_braced(text, match.end())
