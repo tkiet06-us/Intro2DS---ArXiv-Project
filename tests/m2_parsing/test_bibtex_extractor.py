@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from src.m2_parsing.bibtex_extractor import (
+    _is_valid_title,
     extract_bibitems,
     extract_bibtex,
     format_bibtex_entry,
@@ -329,25 +330,86 @@ def test_extract_bibtex_fallback_other_tex(tmp_path):
     assert entries[0]["title"] == "Standalone Title"
 
 
-def test_latex_accents_converted_to_unicode():
-    # R5: Chuyển các dấu TeX \"o, \'e, \~n, \v{s}, \c{c}, \H{o} sang Unicode, tránh Peña biến thành "Pe na"
+def test_valid_title_containing_journal_name():
+    # R1: Tên tạp chí là chuỗi con của tiêu đề (ví dụ "Nature" trong "The Quantum Nature of Light")
     latex = (
         "\\begin{thebibliography}{9}\n"
-        "\\bibitem{godel} K. G\\\"odel, \\emph{On Formally Undecidable Propositions}, 1931.\n"
-        "\\bibitem{rene} Ren\\'e Descartes, \\emph{Discourse on the Method}, 1637.\n"
-        "\\bibitem{pena} F. Pe\\~na, \\emph{Matrix Analysis}, 2015.\n"
-        "\\bibitem{dvorak} A. Dvo\\v{r}\\'{a}k, \\emph{New World Symphony}, 1893.\n"
-        "\\bibitem{erdos} P. Erd\\H{o}s, \\emph{Combinatorics}, 1975.\n"
-        "\\bibitem{cedilla} Fran\\c{c}ois Bourdon, \\emph{Mechanics}, 2010.\n"
+        "\\bibitem{q} A. Einstein, \\emph{The Quantum Nature of Light}, \\textit{Nature}, 2020.\n"
+        "\\bibitem{ds} B. Smith, \\emph{Advances in Data Science}, \\textit{Science}, 2021.\n"
+        "\\bibitem{ml} C. Brown, \\emph{Pattern Recognition and Machine Learning}, \\textit{Machine Learning}, 2022.\n"
         "\\end{thebibliography}\n"
     )
     entries = extract_bibitems(latex)
-    assert "Gödel" in entries[0]["authors"][0]
-    assert "René" in entries[1]["authors"][0]
-    assert "Peña" in entries[2]["authors"][0]
-    assert "Dvořák" in entries[3]["authors"][0]
-    assert "Erdős" in entries[4]["authors"][0]
-    assert "François" in entries[5]["authors"][0]
+    assert entries[0]["title"] == "The Quantum Nature of Light"
+    assert entries[0]["journal"] == "Nature"
+    assert entries[1]["title"] == "Advances in Data Science"
+    assert entries[1]["journal"] == "Science"
+    assert entries[2]["title"] == "Pattern Recognition and Machine Learning"
+    assert entries[2]["journal"] == "Machine Learning"
+
+
+def test_invalid_title_journal_plus_digits_rejected():
+    # R1: Tiêu đề bóc nhầm journal + volume/trang (ví dụ "Physical review letters 123") phải bị loại bỏ
+    assert not _is_valid_title("Physical review letters 123", journal="Physical review letters")
+    assert not _is_valid_title("Physical review", journal="Physical review letters")  # prefix < 15 ký tự
+    assert not _is_valid_title("Nature", journal="Nature")  # trùng hoàn toàn
+
+
+def test_revtex_bibinfo_without_title_not_guessed_from_volume():
+    # R1: REVTeX không có \bibinfo{title} -> title = None, không rơi vào _split_plain đoán tiêu đề
+    latex = (
+        "\\begin{thebibliography}{9}\n"
+        "\\bibitem{revtex}\n"
+        "\\bibinfo{author}{\\bibfnamefont{J.} \\bibnamefont{Preskill}},\n"
+        "\\bibinfo{journal}{Quantum} \\textbf{\\bibinfo{volume}{2}},\n"
+        "\\bibinfo{pages}{79} (\\bibinfo{year}{2018}).\n"
+        "\\end{thebibliography}\n"
+    )
+    entries = extract_bibitems(latex)
+    assert entries[0]["title"] is None
+    assert entries[0]["journal"] == "Quantum"
+    assert entries[0]["year"] == 2018
+
+
+def test_parse_bib_file_filters_case_insensitive(tmp_path):
+    # R2: So khớp citation_key case-insensitive giữa .tex và .bib
+    bib = tmp_path / "case.bib"
+    bib.write_text(
+        "@article{devlin2018,\n"
+        "  title = {BERT},\n"
+        "  author = {J. Devlin},\n"
+        "  year = {2018}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    # Trong .tex viết hoa Devlin2018, trong .bib viết thường devlin2018
+    entries = parse_bib_file(bib, filter_keys={"Devlin2018"})
+    assert len(entries) == 1
+    assert entries[0]["citation_key"] == "devlin2018"
+    assert entries[0]["title"] == "BERT"
+
+
+def test_extract_bibtex_case_insensitive_dedup(tmp_path):
+    # R2: Khử trùng lặp case-insensitive giữa \bibitem và .bib
+    vdir = tmp_path / "v1"
+    vdir.mkdir()
+    bib = vdir / "refs.bib"
+    bib.write_text(
+        "@article{devlin2018,\n"
+        "  title = {BERT},\n"
+        "  author = {J. Devlin},\n"
+        "  year = {2018}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    latex = (
+        "\\begin{thebibliography}{9}\n"
+        "\\bibitem{Devlin2018} J. Devlin, \\emph{BERT}, 2018.\n"
+        "\\end{thebibliography}\n"
+    )
+    entries = extract_bibtex(latex, vdir)
+    assert len(entries) == 1
+    assert entries[0]["citation_key"] == "Devlin2018"
 
 
 def test_protect_spans_and_year_regex_avoids_eprint_digits():
@@ -380,5 +442,25 @@ def test_bibitem_eprint_populates_url_and_journal():
     assert entries[2]["url"] == "https://arxiv.org/abs/2106.00001"
     assert entries[2]["journal"] == "CVPR, arXiv:2106.00001"
 
+
+def test_latex_accents_converted_to_unicode():
+    # R5: Chuyển các dấu TeX \"o, \'e, \~n, \v{s}, \c{c}, \H{o} sang Unicode, tránh Peña biến thành "Pe na"
+    latex = (
+        "\\begin{thebibliography}{9}\n"
+        "\\bibitem{godel} K. G\\\"odel, \\emph{On Formally Undecidable Propositions}, 1931.\n"
+        "\\bibitem{rene} Ren\\'e Descartes, \\emph{Discourse on the Method}, 1637.\n"
+        "\\bibitem{pena} F. Pe\\~na, \\emph{Matrix Analysis}, 2015.\n"
+        "\\bibitem{dvorak} A. Dvo\\v{r}\\'{a}k, \\emph{New World Symphony}, 1893.\n"
+        "\\bibitem{erdos} P. Erd\\H{o}s, \\emph{Combinatorics}, 1975.\n"
+        "\\bibitem{cedilla} Fran\\c{c}ois Bourdon, \\emph{Mechanics}, 2010.\n"
+        "\\end{thebibliography}\n"
+    )
+    entries = extract_bibitems(latex)
+    assert "Gödel" in entries[0]["authors"][0]
+    assert "René" in entries[1]["authors"][0]
+    assert "Peña" in entries[2]["authors"][0]
+    assert "Dvořák" in entries[3]["authors"][0]
+    assert "Erdős" in entries[4]["authors"][0]
+    assert "François" in entries[5]["authors"][0]
 
 

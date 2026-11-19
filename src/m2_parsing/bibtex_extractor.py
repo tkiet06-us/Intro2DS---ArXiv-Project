@@ -505,8 +505,13 @@ def _is_valid_title(
     if journal:
         j_clean = re.sub(r"[^\w]+", "", journal.casefold(), flags=re.UNICODE)
         t_clean = re.sub(r"[^\w]+", "", t.casefold(), flags=re.UNICODE)
-        if j_clean and (j_clean in t_clean or t_clean in j_clean):
-            return False
+        if j_clean and t_clean:
+            if t_clean == j_clean:
+                return False
+            if t_clean.startswith(j_clean) and t_clean[len(j_clean) :].isdigit():
+                return False
+            if j_clean.startswith(t_clean) and len(t_clean) < 15:
+                return False
     return True
 
 
@@ -531,13 +536,18 @@ def _parse_entry(citation_key: str, raw_text: str, entry_type: str = "misc") -> 
         title = _latex_to_text(quoted.group("title")) or None
         authors_prefix = raw_text[: quoted.start()]
         suffix = raw_text[quoted.end() :]
+    elif not bibinfo.get("title") and (bibinfo.get("journal") or bibinfo.get("volume") or bibinfo.get("pages")):
+        # REVTeX / APS style: có \bibinfo journal/volume/pages nhưng cố ý không có title
+        title = None
+        authors_prefix = bibinfo.get("author", "")
+        suffix = raw_text
     elif _APA_RE.match(raw_text):  # APA: chữ nghiêng là venue, không phải title
         authors_prefix, plain_title, suffix = _split_plain(raw_text)
         title = _latex_to_text(plain_title) or None
     elif emphasis is not None:
         inner, start, end = emphasis
         candidate_title = _latex_to_text(inner) or None
-        if candidate_title and _is_valid_title(candidate_title):
+        if candidate_title and _is_valid_title(candidate_title, journal=journal):
             title = candidate_title
             authors_prefix = raw_text[:start]
             suffix = raw_text[end:]
@@ -731,6 +741,7 @@ def parse_bib_file(path: str | Path, filter_keys: set[str] | None = None) -> lis
         ``@preamble`` bị bỏ qua.
     """
     text = _read_file(Path(path))
+    filter_keys_lower = {k.casefold() for k in filter_keys} if filter_keys else None
 
     entries: list[dict] = []
     for match in _ENTRY_START_RE.finditer(text):
@@ -738,7 +749,7 @@ def parse_bib_file(path: str | Path, filter_keys: set[str] | None = None) -> lis
         if entry_type in {"comment", "string", "preamble"}:
             continue
         key = match.group("key").strip()
-        if filter_keys is not None and key not in filter_keys:
+        if filter_keys is not None and key not in filter_keys and key.casefold() not in filter_keys_lower:
             continue
         open_char = match.group("open")
         close_char = "}" if open_char == "{" else ")"
@@ -805,14 +816,16 @@ def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[di
             except (OSError, UnicodeDecodeError) as exc:
                 logger.debug("%s: lỗi đọc file fallback %s: %s", vdir, tex_path, exc)
 
-    # Khử trùng lặp theo citation_key giữ thứ tự xuất hiện đầu tiên
+    # Khử trùng lặp theo citation_key giữ thứ tự xuất hiện đầu tiên (so khớp case-insensitive)
     seen: set[str] = set()
     unique: list[dict] = []
     for e in entries:
         k = e.get("citation_key")
-        if k and k not in seen:
-            seen.add(k)
-            unique.append(e)
+        if k:
+            k_lower = k.casefold()
+            if k_lower not in seen:
+                seen.add(k_lower)
+                unique.append(e)
     return unique
 
 
