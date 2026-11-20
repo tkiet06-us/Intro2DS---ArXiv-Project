@@ -99,6 +99,12 @@ _APA_RE = re.compile(
     re.DOTALL,
 )
 
+# Một số bài toán học dùng gói amsrefs trong .bbl: \bib{key}{article}{ title={...}, ... }
+_AMSREFS_BIB_RE = re.compile(
+    r"\\bib\s*\{(?P<key>[^{}]+)\}\s*\{(?P<type>[^{}]+)\}\s*\{",
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Tiện ích cú pháp
@@ -283,6 +289,17 @@ def _as_optional(value: object) -> str | None:
     text = str(value).strip()
     return text or None
 
+
+def _deduplicate_entries(entries: list[dict]) -> list[dict]:
+    """Loại bỏ các entry trùng citation_key, giữ lại lần xuất hiện đầu tiên."""
+    seen_keys: set[str] = set()
+    unique_entries: list[dict] = []
+    for entry in entries:
+        key = entry["citation_key"]
+        if key not in seen_keys:
+            seen_keys.add(key)
+            unique_entries.append(entry)
+    return unique_entries
 
 # ---------------------------------------------------------------------------
 # Trích xuất từng trường
@@ -668,7 +685,14 @@ def _parse_bib_fields(body: str) -> dict[str, str]:
             while end < len(body) and body[end] != ",":
                 end += 1
             value = body[value_start:end].strip()
-        fields[name] = value.strip()
+
+        clean_value = value.strip()
+        if name in {"author", "editor"} and fields.get(name):
+            if clean_value:
+                fields[name] = f"{fields[name]} and {clean_value}"
+        else:
+            fields[name] = clean_value
+
         position = max(end, value_start + 1)
     return fields
 
@@ -678,7 +702,7 @@ def _entry_from_bib_fields(citation_key: str, fields: dict[str, str], entry_type
     authors = _authors_from_text(fields.get("author") or fields.get("editor") or "")
     title = _latex_to_text(fields.get("title", "")) or None
     journal = _latex_to_text(fields.get("journal") or fields.get("booktitle") or "") or None
-    year_text = fields.get("year", "")
+    year_text = fields.get("year") or fields.get("date") or ""
     year_match = _YEAR_RE.search(year_text) if year_text else None
     year = int(year_match.group(1)) if year_match else None
     doi = _clean_doi(fields.get("doi", "")) or _find_doi(fields.get("url", ""))
@@ -791,6 +815,55 @@ def parse_bib_file(path: str | Path, filter_keys: set[str] | None = None) -> lis
     return entries
 
 
+def _extract_amsrefs_bibitems(text: str) -> list[dict]:
+    """Fallback cho file .bbl sinh bởi gói ``amsrefs`` (``\\bib{key}{type}{...}``)."""
+    entries: list[dict] = []
+    position = 0
+    while match := _AMSREFS_BIB_RE.search(text, position):
+        body, end = _read_braced(text, match.end())
+        position = max(end, match.end())
+        citation_key = match.group("key").strip()
+        entry_type = match.group("type").strip().lower() or "misc"
+        if citation_key:
+            fields = _parse_bib_fields(body)
+            entries.append(_entry_from_bib_fields(citation_key, fields, entry_type))
+    return entries
+
+
+def _find_bbl_files(version_dir: Path) -> list[Path]:
+    """Tìm các file ``.bbl`` trong thư mục nguồn của version."""
+    if not version_dir.is_dir():
+        return []
+    return sorted(path.resolve() for path in version_dir.rglob("*.bbl"))
+
+
+def parse_bbl_file(path: str | Path) -> list[dict]:
+    """Đọc một file ``.bbl`` và convert ngược về danh sách entry chuẩn hóa.
+
+    Thử trích xuất theo cú pháp ``\\bibitem`` chuẩn trước; nếu không có thì thử
+    cú pháp ``amsrefs`` (``\\bib{key}{type}{...}``). Nếu vẫn không tách được thì
+    ghi log cảnh báo và trả list rỗng để caller giữ nguyên file ``.bbl`` gốc.
+    """
+    bbl_path = Path(path)
+    raw = bbl_path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+
+    entries = extract_bibitems(text)
+    if not entries:
+        cleaned = _strip_comments(text.replace("\r\n", "\n").replace("\r", "\n"))
+        entries = _extract_amsrefs_bibitems(cleaned)
+
+    if not entries:
+        logger.warning(
+            "%s: không convert được entry nào từ file .bbl, giữ nguyên file .bbl gốc.",
+            bbl_path,
+        )
+    return entries
+
+
 def _find_bib_files(latex: str, version_dir: Path) -> list[Path]:
     """Tìm các file ``.bib`` được ``\\bibliography{}`` / ``\\addbibresource{}`` chỉ định."""
     names: list[str] = []
@@ -814,19 +887,19 @@ def _find_bib_files(latex: str, version_dir: Path) -> list[Path]:
 
 
 def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[dict]:
-    """Trích xuất BibTeX từ cả ``\\bibitem`` và file ``.bib`` đi kèm (nếu có).
+    """Trích xuất BibTeX từ ``\\bibitem`` trong ``.tex``, file ``.bib``, hoặc fallback sang ``.bbl``.
 
     Args:
         latex: Chuỗi LaTeX đã gộp.
-        version_dir: Thư mục nguồn của version (chứa ``main.tex`` và ``refs.bib``...).
-            ``None`` thì chỉ đọc ``\\bibitem``.
+        version_dir: Thư mục nguồn của version (chứa ``main.tex``, ``refs.bib`` hoặc ``*.bbl``).
+            ``None`` thì chỉ đọc ``\\bibitem`` trong ``latex``.
 
     Returns:
-        Danh sách entry từ ``\\bibitem`` trước, sau đó từ các file ``.bib``.
+        Danh sách entry đã chuẩn hóa theo schema ``src.schemas.Bibtex`` (trừ ``arxiv_id``).
     """
     entries = extract_bibitems(latex)
     if version_dir is None:
-        return entries
+        return _deduplicate_entries(entries)
 
     vdir = Path(version_dir)
     # 1. Đọc các file .bib
@@ -862,6 +935,38 @@ def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[di
                 seen.add(k_lower)
                 unique.append(e)
     return unique
+
+
+def convert_bbl_to_bib(
+    version_dir: str | Path,
+    out_bib_path: str | Path | None = None,
+) -> list[dict]:
+    """Convert toàn bộ file ``.bbl`` trong ``version_dir`` sang danh sách entry (và ghi ra ``out_bib_path`` nếu có).
+
+    File ``.bbl`` gốc luôn được giữ nguyên và không ghi đè vào thư mục nguồn ``version_dir``.
+
+    Args:
+        version_dir: Thư mục nguồn của một version (ví dụ ``<raw>/2506-00788/v1``).
+        out_bib_path: Đường dẫn file ``.bib`` đầu ra (thường nằm ở thư mục ``processed``).
+            Nếu ``None``, chỉ trả về danh sách entry đã parse mà không ghi file ra đĩa.
+
+    Returns:
+        Danh sách entry đã convert và khử trùng theo ``citation_key``.
+    """
+    vdir = Path(version_dir)
+    entries: list[dict] = []
+    for bbl_path in _find_bbl_files(vdir):
+        entries.extend(parse_bbl_file(bbl_path))
+
+    entries = _deduplicate_entries(entries)
+    if not entries:
+        return []
+
+    if out_bib_path is not None:
+        target = Path(out_bib_path)
+        write_bibtex(entries, target)
+
+    return entries
 
 
 # ---------------------------------------------------------------------------
@@ -922,10 +1027,12 @@ def write_bibtex(entries: list[dict], path: str | Path) -> None:
 
 
 __all__ = [
+    "convert_bbl_to_bib",
     "extract_bibitems",
     "extract_bibtex",
     "extract_cited_keys",
     "format_bibtex_entry",
+    "parse_bbl_file",
     "parse_bib_file",
     "write_bibtex",
 ]

@@ -556,19 +556,24 @@ def crawl_references_batch(
         try:
             fetch_results = fetch_references_batch(to_fetch, client)
         except requests.HTTPError as exc:
-            if exc.response is None or exc.response.status_code != 400:
-                raise
-            logger.warning("Batch 400, chuyển sang GET từng bài (%d bài)", len(to_fetch))
-            for aid in to_fetch:
-                try:
-                    fetch_results[aid] = fetch_references(aid, client)
-                except requests.HTTPError as inner:
-                    if inner.response is not None and inner.response.status_code == 400:
-                        fetch_results[aid] = None  # S2 không nhận ID này: not_found
-                    else:
+            status = exc.response.status_code if exc.response is not None else None
+            if status != 400:
+                # 401/403/... hoặc không rõ mã: thử lại cũng vô ích, đánh failed cả nhóm
+                # để lần Resume sau thử lại, không làm sập luồng S2.
+                logger.exception("Batch loi HTTP %s; chuyen toan nhom sang failed", status)
+                failed_ids = set(to_fetch)
+            else:
+                logger.warning("Batch 400, chuyển sang GET từng bài (%d bài)", len(to_fetch))
+                for aid in to_fetch:
+                    try:
+                        fetch_results[aid] = fetch_references(aid, client)
+                    except requests.HTTPError as inner:
+                        if inner.response is not None and inner.response.status_code == 400:
+                            fetch_results[aid] = None  # S2 không nhận ID này: not_found
+                        else:
+                            failed_ids.add(aid)
+                    except S2Error:
                         failed_ids.add(aid)
-                except S2Error:
-                    failed_ids.add(aid)
         except (S2Error, requests.RequestException):
             logger.exception("Lỗi batch; chuyển toàn nhóm sang failed")
             failed_ids = set(to_fetch)

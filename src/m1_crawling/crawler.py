@@ -80,7 +80,7 @@ DEFAULT_OUT = Path("data/raw/papers")
 CONTACT_ENV = "ARXIV_CONTACT"  # biến môi trường thay cho --contact / tham số contact
 MIN_DELAY_S = 3.0  # quy định arXiv: tối thiểu 3 giây giữa hai request
 USER_AGENT = "DS-Project-HCMUS-arXiv-crawler/0.1 (student project; contact: {contact})"
-KEEP_EXTENSIONS = frozenset({".tex", ".bib"})  # ảnh và mọi loại khác không vào corpus
+KEEP_EXTENSIONS = frozenset({".tex", ".bib", ".bbl"})  # ảnh và mọi loại khác không vào corpus
 MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024  # chặn file tải về quá lớn
 MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024  # chặn "zip bomb"
 MAX_KEPT_FILE_BYTES = 50 * 1024 * 1024  # một file .tex/.bib lớn hơn mức này bị bỏ qua
@@ -320,7 +320,7 @@ def _from_tar(tar: tarfile.TarFile) -> Extracted:
     if any(PurePosixPath(name).suffix.lower() == ".tex" for name in result.files):
         result.status, result.reason = STATUS_OK, None
     else:
-        # Chỉ có .bib mà không có .tex: không phải bài LaTeX dùng được -> record rỗng.
+        # Chỉ có .bib/.bbl mà không có .tex: không phải bài LaTeX dùng được -> record rỗng.
         result.files.clear()
     return result
 
@@ -623,17 +623,22 @@ class PoliteFetcher:
                         return FetchResult(status, b"", None, attempt, self._clock() - started)
                     if status in (200, 206):
                         total: int | None = None
+                        # Body đã được giải nén thì Content-Length (số byte nén) không so được.
+                        encoding = str(
+                            response.headers.get("Content-Encoding", "") or "identity"
+                        ).lower()
+                        is_raw = encoding == "identity"
                         if status == 200:
                             partial.clear()  # server gửi lại từ đầu
                             length = response.headers.get("Content-Length", "")
-                            total = int(length) if length.isdigit() else None
+                            total = int(length) if length.isdigit() and is_raw else None
                         else:
                             crange = response.headers.get("Content-Range", "")
                             if not crange.startswith(f"bytes {len(partial)}-"):
                                 partial.clear()
                                 raise requests.exceptions.ChunkedEncodingError("Content-Range lech")
                             tail = crange.rsplit("/", 1)[-1]
-                            total = int(tail) if tail.isdigit() else None
+                            total = int(tail) if tail.isdigit() and is_raw else None
                         for chunk in response.iter_content(chunk_size=1 << 16):
                             partial.extend(chunk)  # lưu dần, đứt giữa chừng vẫn còn
                             if len(partial) > MAX_DOWNLOAD_BYTES:

@@ -6,9 +6,11 @@ import pytest
 
 from src.m2_parsing.bibtex_extractor import (
     _is_valid_title,
+    convert_bbl_to_bib,
     extract_bibitems,
     extract_bibtex,
     format_bibtex_entry,
+    parse_bbl_file,
     parse_bib_file,
     write_bibtex,
 )
@@ -464,3 +466,186 @@ def test_latex_accents_converted_to_unicode():
     assert "François" in entries[5]["authors"][0]
 
 
+def test_extract_bibtex_falls_back_to_bbl_and_converts_to_bib(tmp_path):
+    """Khi không có .bib và .tex không có \\bibitem, phải fallback sang .bbl và giữ nguyên .bbl gốc."""
+    vdir = tmp_path / "v1"
+    vdir.mkdir()
+    bbl_file = vdir / "main.bbl"
+    bbl_file.write_text(
+        "\\begin{thebibliography}{1}\n"
+        "\\bibitem{doe2023} J. Doe, \\emph{Fallback Paper}, NeurIPS, 2023.\n"
+        "\\end{thebibliography}\n",
+        encoding="utf-8",
+    )
+    latex = "\\documentclass{article}\\begin{document}Hello \\cite{doe2023}\\end{document}"
+
+    entries = extract_bibtex(latex, vdir)
+    assert len(entries) == 1
+    assert entries[0]["citation_key"] == "doe2023"
+    assert entries[0]["title"] == "Fallback Paper"
+    assert entries[0]["year"] == 2023
+
+    out_bib = tmp_path / "processed" / "refs.bib"
+    converted = convert_bbl_to_bib(vdir, out_bib_path=out_bib)
+    assert len(converted) == 1
+    assert out_bib.is_file()
+    assert not (vdir / "refs.bib").exists()  # Không ghi bẩn thư mục nguồn raw
+    assert bbl_file.is_file()  # file .bbl gốc vẫn được giữ nguyên
+
+
+def test_parse_bbl_supports_amsrefs_and_keeps_unparseable_bbl(tmp_path):
+    ams_bbl = tmp_path / "ams.bbl"
+    ams_bbl.write_text(
+        "\\begin{bibdiv}\\begin{biblist}\n"
+        "\\bib{k1}{article}{author={A. Smith}, title={AMS Title}, year={2022}}\n"
+        "\\end{biblist}\\end{bibdiv}\n",
+        encoding="utf-8",
+    )
+    entries = parse_bbl_file(ams_bbl)
+    assert len(entries) == 1
+    assert entries[0]["citation_key"] == "k1"
+    assert entries[0]["title"] == "AMS Title"
+    assert entries[0]["year"] == 2022
+
+    weird_dir = tmp_path / "weird"
+    weird_dir.mkdir()
+    weird_bbl = weird_dir / "custom.bbl"
+    weird_bbl.write_text("Custom non-standard bibliography format without bibitem", encoding="utf-8")
+    assert convert_bbl_to_bib(weird_dir) == []
+    assert not (weird_dir / "refs.bib").exists()
+    assert weird_bbl.is_file()
+
+
+def _write_amsrefs_bbl(tmp_path, date_line):
+    path = tmp_path / "a.bbl"
+    path.write_text(
+        "\\begin{biblist}\n"
+        "\\bib{k1}{article}{\n"
+        "  author={A. Smith and B. Jones},\n"
+        "  title={AMS Title},\n"
+        "  journal={J. Tests},\n"
+        f"{date_line}"
+        "}\n"
+        "\\end{biblist}\n"
+    )
+    return path
+
+
+def test_amsrefs_date_with_month_gives_year(tmp_path):
+    bbl = _write_amsrefs_bbl(tmp_path, "  date={2022-05},\n")
+    assert parse_bbl_file(bbl)[0]["year"] == 2022
+
+
+def test_amsrefs_date_year_only_gives_year(tmp_path):
+    bbl = _write_amsrefs_bbl(tmp_path, "  date={2022},\n")
+    assert parse_bbl_file(bbl)[0]["year"] == 2022
+
+
+def test_amsrefs_without_year_or_date_gives_none(tmp_path):
+    bbl = _write_amsrefs_bbl(tmp_path, "")
+    assert parse_bbl_file(bbl)[0]["year"] is None
+
+
+_BBL = (
+    "\\begin{thebibliography}{1}\n"
+    "\\bibitem{k1} A. Smith, Title, J. Tests, 2022.\n"
+    "\\end{thebibliography}\n"
+)
+
+
+def test_convert_bbl_does_not_overwrite_existing_refs_bib(tmp_path):
+    (tmp_path / "main.bbl").write_text(_BBL)
+    original = "@inproceedings{k1,\n  title = {T},\n  booktitle = {Proc},\n  pages = {1--2}\n}\n"
+    (tmp_path / "refs.bib").write_text(original)
+
+    entries = convert_bbl_to_bib(tmp_path)
+
+    assert entries  # vẫn trả về entry đã convert
+    assert (tmp_path / "refs.bib").read_text() == original
+
+
+def test_convert_bbl_without_out_path_does_not_write_to_source_dir(tmp_path):
+    (tmp_path / "main.bbl").write_text(_BBL)
+    entries = convert_bbl_to_bib(tmp_path)
+    assert len(entries) == 1
+    assert not (tmp_path / "refs.bib").exists()
+
+
+def test_convert_bbl_explicit_out_path_leaves_source_refs_bib_alone(tmp_path):
+    (tmp_path / "main.bbl").write_text(_BBL)
+    (tmp_path / "refs.bib").write_text("orig")
+    out = tmp_path / "converted.bib"
+
+    convert_bbl_to_bib(tmp_path, out)
+
+    assert out.is_file()
+    assert (tmp_path / "refs.bib").read_text() == "orig"
+
+
+def test_convert_bbl_to_bib_no_bbl_returns_empty_list(tmp_path: Path) -> None:
+    """0 file .bbl phải trả về [] (không phải None) và không tạo file."""
+    out_bib = tmp_path / "processed" / "refs.bib"
+    result = convert_bbl_to_bib(tmp_path, out_bib_path=out_bib)
+    assert result == []
+    assert not out_bib.exists()
+
+
+def test_convert_bbl_to_bib_multiple_files_and_broken_first(tmp_path: Path) -> None:
+    """File .bbl đầu hỏng vẫn đọc tiếp file sau; 2 file .bbl lấy đủ cả 2 key."""
+    (tmp_path / "a_broken.bbl").write_text("noi dung rac khong co bibitem", encoding="utf-8")
+    (tmp_path / "b_first.bbl").write_text(
+        r"\begin{thebibliography}{1}\bibitem{k1} A. One. \emph{Title 1}. 2020.\end{thebibliography}",
+        encoding="utf-8",
+    )
+    (tmp_path / "c_second.bbl").write_text(
+        r"\begin{thebibliography}{1}\bibitem{k2} B. Two. \emph{Title 2}. 2021.\end{thebibliography}",
+        encoding="utf-8",
+    )
+
+    out_bib = tmp_path / "processed" / "refs.bib"
+    result = convert_bbl_to_bib(tmp_path, out_bib_path=out_bib)
+
+    assert [e["citation_key"] for e in result] == ["k1", "k2"]
+    assert out_bib.is_file()
+    assert not (tmp_path / "refs.bib").exists()
+
+
+def test_extract_bibtex_deduplicates_citation_keys(tmp_path: Path) -> None:
+    """Trùng citation_key giữa các file .bbl thì giữ lại lần xuất hiện đầu tiên."""
+    (tmp_path / "part1.bbl").write_text(
+        r"\begin{thebibliography}{1}\bibitem{k1} A. One. \emph{First Title}. 2020.\end{thebibliography}",
+        encoding="utf-8",
+    )
+    (tmp_path / "part2.bbl").write_text(
+        r"\begin{thebibliography}{1}\bibitem{k1} B. Two. \emph{Duplicate Title}. 2021.\end{thebibliography}",
+        encoding="utf-8",
+    )
+
+    result = extract_bibtex("", version_dir=tmp_path)
+    assert len(result) == 1
+    assert result[0]["citation_key"] == "k1"
+    assert result[0]["title"] == "First Title"
+
+
+def test_parse_bbl_amsrefs_multiple_author_fields(tmp_path: Path) -> None:
+    """amsrefs có nhiều dòng author={...} phải được gộp đủ danh sách tác giả."""
+    bbl_file = tmp_path / "ams.bbl"
+    bbl_file.write_text(
+        r"""
+        \begin{bibdiv}
+        \begin{biblist}
+        \bib{ams1}{article}{
+          author={Smith, A.},
+          author={Jones, B.},
+          title={Sample AMS Paper},
+          date={2022},
+        }
+        \end{biblist}
+        \end{bibdiv}
+        """,
+        encoding="utf-8",
+    )
+
+    result = parse_bbl_file(bbl_file)
+    assert len(result) == 1
+    assert result[0]["authors"] == ["Smith, A.", "Jones, B."]
