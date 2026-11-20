@@ -214,7 +214,7 @@ _SPECIAL_LATEX_MACROS = {
 }
 
 _ACCENT_RE = re.compile(
-    r"""\\(?:(["'^`~=.])\s*\{?\s*([a-zA-Z]|\\[ij]\b)\s*\}?|([cvHu rkdb])\s*\{\s*([a-zA-Z]|\\[ij]\b)\s*\}|([cvHu rkdb])\s+([a-zA-Z]))"""
+    r"""\\(?:(["'^`~=.])\s*\{?\s*([a-zA-Z]|\\[ij]\b)\s*\}?|([cvHurkdb])\s*\{\s*([a-zA-Z]|\\[ij]\b)\s*\}|([cvHurkdb])\s+([a-zA-Z]))"""
 )
 
 
@@ -371,12 +371,19 @@ def _find_url(raw: str) -> str | None:
 
 
 def _bibinfo_fields(raw: str) -> dict[str, str]:
-    """Gom các cặp ``\\bibinfo{field}{value}`` thành dict (giữ lần xuất hiện đầu)."""
+    """Gom các cặp ``\\bibinfo{field}{value}`` thành dict."""
     fields: dict[str, str] = {}
+    authors: list[str] = []
     for match in _BIBINFO_RE.finditer(raw):
         name = match.group(1).strip().lower()
         value, _ = _read_braced(raw, match.end())
-        fields.setdefault(name, value)
+        if name == "author":
+            if value.strip():
+                authors.append(value.strip())
+        else:
+            fields.setdefault(name, value)
+    if authors:
+        fields["author"] = " and ".join(authors)
     return fields
 
 
@@ -728,6 +735,31 @@ def extract_cited_keys(latex: str) -> set[str]:
                 keys.add(k)
     return keys
 
+def _strip_bib_comments(body: str) -> str:
+    out: list[str] = []
+    depth = 0
+    in_quote = False
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\" and i + 1 < len(body):
+            out.append(body[i : i + 2])
+            i += 2
+            continue
+        if ch == '"' and depth == 0:
+            in_quote = not in_quote
+        elif not in_quote:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth = max(0, depth - 1)
+            elif ch == "%" and depth == 0:
+                while i < len(body) and body[i] != "\n":
+                    i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 def parse_bib_file(path: str | Path, filter_keys: set[str] | None = None) -> list[dict]:
     """Đọc một file ``.bib`` và trả về danh sách entry đã chuẩn hóa.
@@ -754,7 +786,7 @@ def parse_bib_file(path: str | Path, filter_keys: set[str] | None = None) -> lis
         open_char = match.group("open")
         close_char = "}" if open_char == "{" else ")"
         body, _ = _read_delimited(text, match.end("open"), open_char, close_char)
-        fields = _parse_bib_fields(_strip_comments(body))
+        fields = _parse_bib_fields(_strip_bib_comments(body))
         entries.append(_entry_from_bib_fields(key, fields, entry_type))
     return entries
 
@@ -805,16 +837,19 @@ def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[di
 
     # 2. Fallback: Nếu vẫn chưa có entry nào, quét các file .tex khác trong version_dir
     if not entries and vdir.is_dir():
-        for tex_path in sorted(vdir.rglob("*.tex")):
-            try:
-                tex_content = _read_file(tex_path)
-                if r"\bibitem" in tex_content:
-                    found = extract_bibitems(tex_content)
-                    if found:
-                        entries.extend(found)
-                        break
-            except (OSError, UnicodeDecodeError) as exc:
-                logger.debug("%s: lỗi đọc file fallback %s: %s", vdir, tex_path, exc)
+        for pattern in ("*.bbl", "*.tex"):
+            for candidate_path in sorted(vdir.rglob(pattern)):
+                try:
+                    content = _read_file(candidate_path)
+                    if r"\bibitem" in content:
+                        found = extract_bibitems(content)
+                        if found:
+                            entries.extend(found)
+                            break
+                except (OSError, UnicodeDecodeError) as exc:
+                    logger.debug("%s: lỗi đọc file fallback %s: %s", vdir, candidate_path, exc)
+            if entries:
+                break
 
     # Khử trùng lặp theo citation_key giữ thứ tự xuất hiện đầu tiên (so khớp case-insensitive)
     seen: set[str] = set()

@@ -70,7 +70,7 @@ def _locate(base: Path, name: str, current_dir: Path | None = None) -> Path | No
     Returns:
         Đường dẫn file tồn tại, hoặc ``None``.
     """
-    name = name.strip()
+    name = name.strip().strip("\"'")
     bases = [base]
     if current_dir is not None:
         c_res = current_dir.resolve()
@@ -100,18 +100,22 @@ def find_main_tex(src_dir: str | Path) -> Path:
     """
     root = Path(src_dir)
     texts: dict[Path, str] = {}
+    all_texts: dict[Path, str] = {}
+    texts: dict[Path, str] = {}
     for path in sorted(root.rglob("*.tex")):
+        resolved = path.resolve()
         text = strip_comments(_read(path))
+        all_texts[resolved] = text
         if _DOCUMENTCLASS.search(text):
-            texts[path.resolve()] = text
+            texts[resolved] = text
     if not texts:
         logger.warning("%s: không có file .tex nào chứa \\documentclass", src_dir)
         raise FileNotFoundError(f"không tìm thấy file .tex chứa \\documentclass trong {src_dir}")
 
     included: set[str] = set()
-    for text in texts.values():
+    for text in all_texts.values():
         for match in _INCLUDE.finditer(text):
-            included.add(Path((match.group(1) or match.group(2)).strip()).stem)
+            included.add(Path((match.group(1) or match.group(2)).strip().strip("\"'")).stem)
 
     def rank(item: tuple[Path, str]) -> tuple:
         path, text = item
