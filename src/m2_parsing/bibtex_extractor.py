@@ -217,6 +217,17 @@ def _as_optional(value: object) -> str | None:
     return text or None
 
 
+def _deduplicate_entries(entries: list[dict]) -> list[dict]:
+    """Loại bỏ các entry trùng citation_key, giữ lại lần xuất hiện đầu tiên."""
+    seen_keys: set[str] = set()
+    unique_entries: list[dict] = []
+    for entry in entries:
+        key = entry["citation_key"]
+        if key not in seen_keys:
+            seen_keys.add(key)
+            unique_entries.append(entry)
+    return unique_entries
+
 # ---------------------------------------------------------------------------
 # Trích xuất từng trường
 # ---------------------------------------------------------------------------
@@ -504,7 +515,14 @@ def _parse_bib_fields(body: str) -> dict[str, str]:
             while end < len(body) and body[end] != ",":
                 end += 1
             value = body[value_start:end].strip()
-        fields[name] = value.strip()
+
+        clean_value = value.strip()
+        if name in {"author", "editor"} and fields.get(name):
+            if clean_value:
+                fields[name] = f"{fields[name]} and {clean_value}"
+        else:
+            fields[name] = clean_value
+
         position = max(end, value_start + 1)
     return fields
 
@@ -649,7 +667,7 @@ def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[di
     """
     entries = extract_bibitems(latex)
     if version_dir is None:
-        return entries
+        return _deduplicate_entries(entries)
 
     vdir = Path(version_dir)
     for bib_path in _find_bib_files(latex, vdir):
@@ -660,43 +678,39 @@ def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[di
         for bbl_path in _find_bbl_files(vdir):
             entries.extend(parse_bbl_file(bbl_path))
 
-    return entries
+    return _deduplicate_entries(entries)
 
 
 def convert_bbl_to_bib(
     version_dir: str | Path,
     out_bib_path: str | Path | None = None,
 ) -> list[dict]:
-    """Convert toàn bộ file ``.bbl`` trong ``version_dir`` sang ``refs.bib``.
+    """Convert toàn bộ file ``.bbl`` trong ``version_dir`` sang danh sách entry (và ghi ra ``out_bib_path`` nếu có).
 
-    File ``.bbl`` gốc luôn được giữ nguyên (không xóa) để bảo toàn nguồn tham khảo
-    trong trường hợp có entry hoặc file không parse tự động được.
+    File ``.bbl`` gốc luôn được giữ nguyên và không ghi đè vào thư mục nguồn ``version_dir``.
 
     Args:
-        version_dir: Thư mục nguồn của một version (ví dụ ``<out>/2506-00788/v1``).
-        out_bib_path: Đường dẫn file ``.bib`` đầu ra. Mặc định là ``<version_dir>/refs.bib``
-            (chỉ ghi khi convert được ít nhất 1 entry).
+        version_dir: Thư mục nguồn của một version (ví dụ ``<raw>/2506-00788/v1``).
+        out_bib_path: Đường dẫn file ``.bib`` đầu ra (thường nằm ở thư mục ``processed``).
+            Nếu ``None``, chỉ trả về danh sách entry đã parse mà không ghi file ra đĩa.
 
     Returns:
-        Danh sách entry đã convert được.
+        Danh sách entry đã convert và khử trùng theo ``citation_key``.
     """
     vdir = Path(version_dir)
     entries: list[dict] = []
     for bbl_path in _find_bbl_files(vdir):
         entries.extend(parse_bbl_file(bbl_path))
 
-        if entries:
-            if out_bib_path is not None:
-                target = Path(out_bib_path)
-            else:
-                target = vdir / "refs.bib"
-                if target.exists():
-                    logger.warning(
-                        "%s: đã có refs.bib nguồn, không ghi đè bằng bản convert từ .bbl.", vdir
-                    )
-                    return entries
-            write_bibtex(entries, target)
-        return entries
+    entries = _deduplicate_entries(entries)
+    if not entries:
+        return []
+
+    if out_bib_path is not None:
+        target = Path(out_bib_path)
+        write_bibtex(entries, target)
+
+    return entries
 
 
 # ---------------------------------------------------------------------------
