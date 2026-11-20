@@ -925,6 +925,15 @@ python -m src.main --stage m2 --id_start 2506.00788 --id_end 2506.05787 --name k
 
 **Checkpoint/Resume:** nếu chương trình bị ngắt (mất mạng, tắt máy), chỉ cần **chạy lại đúng lệnh cũ**, nó sẽ tiếp tục từ bài đang dở, không tải lại từ đầu. `--no_resume` buộc chạy lại từ đầu.
 
+**Cách M1 tải (sau đợt tối ưu crawler):** mỗi request tốn max(3 giây, thời gian truyền), cộng thêm thời gian thử lại; CPU không đáng kể. Vì vậy:
+
+- Mỗi gói được tải **thẳng xuống đĩa** vào `data/sources/<name>/` (spool) rồi một luồng nền giải nén, ghi `v{n}/`, ghi log và xóa gói. Đứt giữa chừng thì tải tiếp bằng `Range` (kể cả sau khi tắt máy); gói đã tải xong mà chưa kịp giải nén thì lần sau làm tiếp, **không tải lại**.
+- Version chỉ có PDF: đóng kết nối ngay sau header, không tải body (vẫn có `v{n}/` rỗng và dòng log `pdf_only`).
+- Kết nối treo quá `crawler.timeout_read` giây (mặc định 30) thì cắt và tải tiếp.
+- Việc **tải vẫn tuần tự**: một kết nối tới arXiv, gặp 403 là dừng. Hai lần **gửi** request cách nhau ≥ 3 giây: gói tải lâu hơn 3 giây thì request sau được gửi ngay khi gói đó tải xong.
+
+Các khóa mới trong mục `crawler` của `configs/config.yaml`: `timeout_read`, `extract_workers`, `max_spool_gb`.
+
 ### 10.2 Chạy từng module (khi phát triển)
 
 ```bash
