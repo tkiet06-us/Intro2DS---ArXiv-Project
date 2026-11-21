@@ -899,14 +899,23 @@ def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[di
     Returns:
         Danh sách entry đã chuẩn hóa theo schema ``src.schemas.Bibtex`` (trừ ``arxiv_id``).
     """
-    vdir = Path(version_dir) if version_dir is not None else None
-    entries: list[dict] = []
+    entries = extract_bibitems(latex)
+    if version_dir is None:
+        return _deduplicate_entries(entries)
 
-    if not entries and vdir is not None and vdir.is_dir():
+    vdir = Path(version_dir)
+    # 1. Đọc các file .bib
+    cited_keys = extract_cited_keys(latex) if latex else None
+    filter_keys = cited_keys if (cited_keys and r"\nocite{*}" not in (latex or "")) else None
+    for bib_path in _find_bib_files(latex, vdir):
+        entries.extend(parse_bib_file(bib_path, filter_keys=filter_keys))
+
+    # 2. Fallback: thử parse toàn bộ *.bbl (kể cả amsrefs), sau đó mới quét *.tex
+    if not entries and vdir.is_dir():
         for bbl_path in _find_bbl_files(vdir):
             entries.extend(parse_bbl_file(bbl_path))
 
-    if not entries and vdir is not None and vdir.is_dir():
+    if not entries and vdir.is_dir():
         for tex_path in sorted(vdir.rglob("*.tex")):
             try:
                 content = _read_file(tex_path)
@@ -919,41 +928,6 @@ def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[di
                 logger.debug("%s: lỗi đọc file fallback %s: %s", vdir, tex_path, exc)
 
     return _deduplicate_entries(entries)
-
-    vdir = Path(version_dir)
-    # 1. Đọc các file .bib
-    cited_keys = extract_cited_keys(latex) if latex else None
-    filter_keys = cited_keys if (cited_keys and r"\nocite{*}" not in (latex or "")) else None
-    for bib_path in _find_bib_files(latex, vdir):
-        entries.extend(parse_bib_file(bib_path, filter_keys=filter_keys))
-
-    # 2. Fallback: Nếu vẫn chưa có entry nào, quét các file .tex khác trong version_dir
-    if not entries and vdir.is_dir():
-        for pattern in ("*.bbl", "*.tex"):
-            for candidate_path in sorted(vdir.rglob(pattern)):
-                try:
-                    content = _read_file(candidate_path)
-                    if r"\bibitem" in content:
-                        found = extract_bibitems(content)
-                        if found:
-                            entries.extend(found)
-                            break
-                except (OSError, UnicodeDecodeError) as exc:
-                    logger.debug("%s: lỗi đọc file fallback %s: %s", vdir, candidate_path, exc)
-            if entries:
-                break
-
-    # Khử trùng lặp theo citation_key giữ thứ tự xuất hiện đầu tiên (so khớp case-insensitive)
-    seen: set[str] = set()
-    unique: list[dict] = []
-    for e in entries:
-        k = e.get("citation_key")
-        if k:
-            k_lower = k.casefold()
-            if k_lower not in seen:
-                seen.add(k_lower)
-                unique.append(e)
-    return unique
 
 
 def convert_bbl_to_bib(
