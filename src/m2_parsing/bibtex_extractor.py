@@ -291,14 +291,16 @@ def _as_optional(value: object) -> str | None:
 
 
 def _deduplicate_entries(entries: list[dict]) -> list[dict]:
-    """Loại bỏ các entry trùng citation_key, giữ lại lần xuất hiện đầu tiên."""
+    """Loại bỏ các entry trùng citation_key (không phân biệt hoa/thường), giữ lần đầu."""
     seen_keys: set[str] = set()
     unique_entries: list[dict] = []
     for entry in entries:
-        key = entry["citation_key"]
-        if key not in seen_keys:
-            seen_keys.add(key)
-            unique_entries.append(entry)
+        key = entry.get("citation_key")
+        if key:
+            key_lower = key.casefold()
+            if key_lower not in seen_keys:
+                seen_keys.add(key_lower)
+                unique_entries.append(entry)
     return unique_entries
 
 # ---------------------------------------------------------------------------
@@ -897,9 +899,26 @@ def extract_bibtex(latex: str, version_dir: str | Path | None = None) -> list[di
     Returns:
         Danh sách entry đã chuẩn hóa theo schema ``src.schemas.Bibtex`` (trừ ``arxiv_id``).
     """
-    entries = extract_bibitems(latex)
-    if version_dir is None:
-        return _deduplicate_entries(entries)
+    vdir = Path(version_dir) if version_dir is not None else None
+    entries: list[dict] = []
+
+    if not entries and vdir is not None and vdir.is_dir():
+        for bbl_path in _find_bbl_files(vdir):
+            entries.extend(parse_bbl_file(bbl_path))
+
+    if not entries and vdir is not None and vdir.is_dir():
+        for tex_path in sorted(vdir.rglob("*.tex")):
+            try:
+                content = _read_file(tex_path)
+                if r"\bibitem" in content:
+                    found = extract_bibitems(content)
+                    if found:
+                        entries.extend(found)
+                        break
+            except (OSError, UnicodeDecodeError) as exc:
+                logger.debug("%s: lỗi đọc file fallback %s: %s", vdir, tex_path, exc)
+
+    return _deduplicate_entries(entries)
 
     vdir = Path(version_dir)
     # 1. Đọc các file .bib
