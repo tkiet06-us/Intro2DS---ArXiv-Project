@@ -10,11 +10,11 @@ Hai đường cùng một bộ quy tắc:
 
 Quy tắc dữ liệu (không đổi):
     - Nhận diện theo NỘI DUNG: PDF, ``.tar.gz``, ``.tar``, ``.gz`` đơn, zip/Word, văn bản thô.
-    - Chỉ giữ ``.tex`` và ``.bib``; ảnh và mọi file khác không bao giờ vào corpus. Nội dung file
+    - Chỉ giữ ``.tex``, ``.bib`` và ``.bbl``; ảnh và mọi file khác không bao giờ vào corpus. Nội dung file
       được chép NGUYÊN VĂN từng byte.
     - Bỏ symlink/hardlink/thiết bị, đường dẫn tuyệt đối hay có ``..``, rác macOS, file trùng tên
       không phân biệt hoa thường, file giữ lại lớn hơn ``MAX_KEPT_FILE_BYTES``.
-    - Chỉ có ``.bib`` mà không có ``.tex`` thì là record rỗng ``no_tex``.
+    - Chỉ có ``.bib``/``.bbl`` mà không có ``.tex`` thì là record rỗng ``no_tex``.
     - Tổng dung lượng giải nén vượt ``MAX_UNCOMPRESSED_BYTES`` thì ``too_large``.
     - Tar hỏng giữa chừng hoặc gzip hỏng thì ``corrupt_archive`` (crawler sẽ thử tải lại).
 """
@@ -51,7 +51,7 @@ __all__ = [
     "write_version",
 ]
 
-KEEP_EXTENSIONS = frozenset({".tex", ".bib"})  # ảnh và mọi loại khác không vào corpus
+KEEP_EXTENSIONS = frozenset({".tex", ".bib", ".bbl"})  # ảnh và mọi loại khác không vào corpus
 SINGLE_FILE_NAME = "main.tex"  # tên file khi nguồn là một .gz đơn
 COPY_BYTES = 1 << 20  # kích thước khối khi chép/giải nén theo luồng
 
@@ -258,7 +258,7 @@ def _from_tar(tar: tarfile.TarFile) -> Extracted:
     if _has_tex(result.files):
         result.status, result.reason = STATUS_OK, None
     else:
-        # Chỉ có .bib mà không có .tex: không phải bài LaTeX dùng được -> record rỗng.
+        # Chỉ có .bib/.bbl mà không có .tex: không phải bài LaTeX dùng được -> record rỗng.
         result.files.clear()
     return result
 
@@ -409,7 +409,7 @@ def _tar_to_dir(tar: tarfile.TarFile, dest_tmp: Path) -> Extracted:
     if _has_tex(result.sizes):
         result.status, result.reason = STATUS_OK, None
     else:
-        # Chỉ có .bib mà không có .tex: không phải bài LaTeX dùng được -> record rỗng.
+        # Chỉ có .bib/.bbl mà không có .tex: không phải bài LaTeX dùng được -> record rỗng.
         result.sizes.clear()
         _clear_dir(dest_tmp)
     return result

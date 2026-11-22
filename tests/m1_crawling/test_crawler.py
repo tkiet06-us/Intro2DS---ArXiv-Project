@@ -1195,3 +1195,14 @@ def test_printable_summary_shortens_long_collections():
     shown = crawler._printable({"short": [1, 2], "long": list(range(50)), "n": 3})
     assert shown["short"] == [1, 2] and shown["n"] == 3
     assert "50" in shown["long"] and crawler.SUMMARY_NAME in shown["long"]
+
+
+def test_tar_gz_retains_bbl_with_tex_and_rejects_bbl_only():
+    bbl = b"\\begin{thebibliography}{1}\n\\bibitem{k} Author, Title, 2024.\n\\end{thebibliography}\n"
+    ok_result = extract_tex_sources(make_tar_gz({"main.tex": TEX, "main.bbl": bbl, "fig.png": PNG}))
+    assert ok_result.status == "ok"
+    assert sorted(ok_result.files) == ["main.bbl", "main.tex"]
+
+    empty_result = extract_tex_sources(make_tar_gz({"main.bbl": bbl}))
+    assert empty_result.status == "empty" and empty_result.reason == "no_tex"
+    assert empty_result.files == {}
