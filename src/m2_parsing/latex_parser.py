@@ -24,7 +24,11 @@ logger = logging.getLogger(__name__)
 # Mỗi dòng: gom phần trước dấu % chưa bị escape.
 _COMMENT_LINE = re.compile(r"^((?:[^%\\\n]|\\.)*)%.*$", re.MULTILINE)
 _DOCUMENTCLASS = re.compile(r"\\documentclass\b")
-_BEGIN_DOCUMENT = re.compile(r"\\begin\{document\}")
+_BEGIN_DOCUMENT = re.compile(r"\\begin\s*\{\s*document\s*\}")
+_BIB_HINT = re.compile(
+    r"\\(?:bibliography|addbibresource|bibitem|begin\s*\{\s*thebibliography\s*\})\b",
+    re.IGNORECASE,
+)
 # \input{a}, \include{a}, \subfile{a} hoặc dạng không ngoặc "\input a.tex".
 _INCLUDE = re.compile(r"\\(?:input|include|subfile)(?![A-Za-z])\s*(?:\{([^{}]+)\}|([^\s{}\\]+))")
 
@@ -54,20 +58,28 @@ def _read(path: Path) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _locate(base: Path, name: str) -> Path | None:
-    """Tìm file được include, thử có/không đuôi ``.tex``, tính từ thư mục ``base``.
+def _locate(base: Path, name: str, current_dir: Path | None = None) -> Path | None:
+    """Tìm file được include, thử có/không đuôi ``.tex``, tính từ thư mục ``base``
+    hoặc fallback sang ``current_dir`` (nơi chứa file cha đang gọi include).
 
     Args:
         base: Thư mục chứa file gốc (LaTeX tính đường dẫn tương đối từ đây).
         name: Tên trong ``\\input{...}``.
+        current_dir: Thư mục chứa file hiện tại đang thực hiện include (fallback).
 
     Returns:
         Đường dẫn file tồn tại, hoặc ``None``.
     """
-    name = name.strip()
-    for candidate in (base / name, base / f"{name}.tex"):
-        if candidate.is_file():
-            return candidate.resolve()
+    name = name.strip().strip("\"'")
+    bases = [base]
+    if current_dir is not None:
+        c_res = current_dir.resolve()
+        if c_res != base.resolve():
+            bases.append(current_dir)
+    for b in bases:
+        for candidate in (b / name, b / f"{name}.tex"):
+            if candidate.is_file():
+                return candidate.resolve()
     return None
 
 
@@ -88,23 +100,28 @@ def find_main_tex(src_dir: str | Path) -> Path:
     """
     root = Path(src_dir)
     texts: dict[Path, str] = {}
+    all_texts: dict[Path, str] = {}
+    texts: dict[Path, str] = {}
     for path in sorted(root.rglob("*.tex")):
+        resolved = path.resolve()
         text = strip_comments(_read(path))
+        all_texts[resolved] = text
         if _DOCUMENTCLASS.search(text):
-            texts[path.resolve()] = text
+            texts[resolved] = text
     if not texts:
         logger.warning("%s: không có file .tex nào chứa \\documentclass", src_dir)
         raise FileNotFoundError(f"không tìm thấy file .tex chứa \\documentclass trong {src_dir}")
 
     included: set[str] = set()
-    for text in texts.values():
+    for text in all_texts.values():
         for match in _INCLUDE.finditer(text):
-            included.add(Path((match.group(1) or match.group(2)).strip()).stem)
+            included.add(Path((match.group(1) or match.group(2)).strip().strip("\"'")).stem)
 
     def rank(item: tuple[Path, str]) -> tuple:
         path, text = item
         return (
             not _BEGIN_DOCUMENT.search(text),  # False (có document) xếp trước
+            not bool(_BIB_HINT.search(text)),  # False (chứa dấu hiệu bibliography) xếp trước
             path.stem in included,
             len(path.relative_to(root.resolve()).parts),
             -len(text),
@@ -132,7 +149,7 @@ def _expand(
 
     def replace(match: re.Match) -> str:
         name = match.group(1) or match.group(2)
-        target = _locate(base, name)
+        target = _locate(base, name, current_dir=path.parent)
         if target is None:
             logger.warning("%s: \\input{%s} trỏ tới file không tồn tại, bỏ qua", path.name, name)
             return " "
