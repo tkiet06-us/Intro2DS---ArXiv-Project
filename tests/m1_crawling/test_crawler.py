@@ -867,16 +867,17 @@ def test_write_version_failure_is_logged_and_run_continues(tmp_path: Path, monke
 def test_extract_failure_is_logged_with_exception_type_and_run_continues(
     tmp_path: Path, monkeypatch
 ):
-    real = crawler.extract_tex_sources
+    # Pipeline nay trích xuất từ file trong spool (extract_from_path) thay vì từ bytes trong RAM.
+    real = crawler.extract_from_path
     calls = []
 
-    def flaky_extract(data):
+    def flaky_extract(path, dest_tmp):
         calls.append(1)
         if len(calls) == 1:
             raise MemoryError("giai nen qua lon")
-        return real(data)
+        return real(path, dest_tmp)
 
-    monkeypatch.setattr(crawler, "extract_tex_sources", flaky_extract)
+    monkeypatch.setattr(crawler, "extract_from_path", flaky_extract)
     summary, session, _ = run_crawl(tmp_path)
     assert len(session.calls) == 4 and summary["by_status"]["error"] == 1
     assert read_log(tmp_path)[0]["reason"].startswith("MemoryError")

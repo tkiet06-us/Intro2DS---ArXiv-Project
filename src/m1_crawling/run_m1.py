@@ -7,17 +7,21 @@
 
 Luồng chạy và chỗ được tăng tốc:
 
-    1. Discovery (script ``discovery.py``, chạy như tiến trình con): quét snapshot Kaggle + gọi
-       arXiv API lấy ``n_versions``, rồi vá ``version_dates``. Phải xong TRƯỚC khi crawl vì crawler
-       cần ``n_versions``. Bước này chỉ vài chục phút nên không đáng làm phức tạp để chồng lên crawl.
+    1. Discovery (script ``discovery.py``, chạy như tiến trình con): đọc snapshot Kaggle từng dòng
+       + gọi arXiv API lấy ``n_versions``, rồi vá ``version_dates``. Phải xong TRƯỚC khi crawl vì
+       crawler cần ``n_versions``. Bước này chỉ vài chục phút nên không chồng lên crawl.
     2. Hai luồng chạy SONG SONG ngay sau đó:
          - luồng ``arxiv``: ``crawler.run`` tải mã nguồn từng version (nút cổ chai: >= 3 giây/request
-           và một kết nối, quy định của arXiv, KHÔNG thể song song hóa trong chính luồng này);
+           và một kết nối, quy định của arXiv, KHÔNG thể song song hóa trong chính luồng này).
+           Gói tải thẳng xuống ``data/sources/<name>/`` (spool), một luồng nền ``extract`` giải nén
+           và ghi ``v{n}/`` trong lúc luồng ``arxiv`` chờ/tải version kế tiếp;
          - luồng ``s2``: ``s2_api.run_s2_stage`` lấy references theo lô. S2 là host khác, giới hạn
            khác, và chỉ cần ``arxiv_id`` nên không phải chờ arXiv. Nhờ vậy toàn bộ thời gian S2 được
-           "giấu" vào thời gian chờ delay của arXiv thay vì cộng thêm vào.
-       Việc giải nén/ghi đĩa của từng version vốn đã chạy trong lúc chờ delay 3 giây kế tiếp
-       (``PoliteFetcher`` tính delay từ lúc request trước KẾT THÚC), nên cũng không tốn thêm giờ.
+           "giấu" vào thời gian chạy của luồng arXiv thay vì cộng thêm vào.
+       Mỗi request tốn max(3 giây, thời gian truyền) vì 3 giây tính từ lúc GỬI request; cộng thêm
+       thời gian thử lại (CPU không đáng kể). Phần tối ưu nằm ở: không tải body của version chỉ
+       có PDF, cắt kết nối treo sau ``crawler.timeout_read`` giây rồi tải tiếp bằng Range, và
+       không tải lại gói đã nằm trong spool khi chạy lại.
     3. Profiler (RAM đỉnh/trung bình, đĩa, thời gian) bao trùm cả hai luồng, rồi xuất
        ``reports/summary_stats_<name>.json`` cho Jupyter Book và ``reports/profile_m1_<name>.json``.
 
@@ -55,7 +59,7 @@ DISCOVERY_SCRIPT = Path(__file__).with_name("discovery.py")
 EXIT_OK, EXIT_PARTIAL, EXIT_BAD_INPUT, EXIT_BLOCKED, EXIT_ABORTED, EXIT_DISK, EXIT_DISCOVERY = (
     0, 1, 2, 3, 4, 5, 6,
 )
-ESTIMATED_DOWNLOAD_S = 1.0  # ước lượng thô thời gian tải một version (chưa tính delay 3s)
+STOP_JOIN_S = 60.0  # sau Ctrl+C: chờ luồng arXiv dừng gọn (xong request đang chạy + trích xuất nốt)
 
 
 class DiscoveryFailedError(RuntimeError):
@@ -69,10 +73,20 @@ class Paths:
     discovery: Path
     out_dir: Path
     reports: Path
+    spool: Path  # gói đã tải chờ trích xuất
 
     @classmethod
-    def build(cls, name: str, data_root: Path, reports: Path) -> "Paths":
-        return cls(data_root / f"discovery_{name}.jsonl", data_root / f"papers_{name}", reports)
+    def build(
+        cls, name: str, data_root: Path, reports: Path, sources_root: Path | None = None
+    ) -> "Paths":
+        # Mặc định data/raw -> data/sources/<name> (khớp paths.sources trong config.yaml).
+        sources_root = sources_root or Path(data_root).parent / "sources"
+        return cls(
+            data_root / f"discovery_{name}.jsonl",
+            data_root / f"papers_{name}",
+            reports,
+            Path(sources_root) / name,
+        )
 
     def report(self, stem: str, name: str) -> Path:
         return self.reports / f"{stem}_{name}.json"
@@ -274,10 +288,13 @@ def _eta_line(papers: list[dict], delay: float) -> str:
         versions = sum(crawler._n_versions(row) for row in papers)  # noqa: SLF001
     except ValueError:
         return "Chua tinh duoc ETA (con bai thieu n_versions, crawler se tra API)."
-    hours = versions * (delay + ESTIMATED_DOWNLOAD_S) / 3600
+    # Mỗi version tốn max(delay, thời gian truyền) nên chỉ tính trước được mức TỐI THIỂU; thời
+    # gian thật phụ thuộc mạng và số lần thử lại.
+    min_hours = versions * delay / 3600
     return (
-        f"{len(papers)} bai / {versions} version => uoc tinh toi da ~{hours:.1f} gio cho arXiv "
-        f"(~{delay + ESTIMATED_DOWNLOAD_S:.0f}s/version; version da xong se duoc bo qua)"
+        f"{len(papers)} bai / {versions} version => toi thieu ~{min_hours:.1f} gio cho arXiv "
+        f"({delay:.0f}s/request; goi tai lau hon {delay:.0f}s hoac phai thu lai se mat lau hon; "
+        f"version da xong se duoc bo qua)"
     )
 
 
@@ -298,7 +315,9 @@ def run_pipeline(
     Returns:
         Mã thoát (xem docstring module).
     """
-    paths = Paths.build(args.name, args.data_root, args.reports)
+    paths = Paths.build(
+        args.name, args.data_root, args.reports, getattr(args, "sources_root", None)
+    )
     paths.out_dir.mkdir(parents=True, exist_ok=True)
     paths.reports.mkdir(parents=True, exist_ok=True)
     wall_start = time.monotonic()
@@ -307,8 +326,11 @@ def run_pipeline(
     interrupted = False
     discovery_seconds: float | None = None
     id_start, id_end = args.id_start, args.id_end
+    settings = crawler.CrawlerSettings.from_config(args.config)
+    stop_event = threading.Event()
 
-    with Profiler(watch_dir=paths.out_dir) as prof:
+    # Spool nằm ngoài out_dir nên phải khai báo riêng để "đĩa đỉnh" tính cả gói đang chờ.
+    with Profiler(watch_dir=paths.out_dir, extra_dirs=[paths.spool]) as prof:
         if not args.skip_discovery:
             started = time.monotonic()
             run_discovery(args, paths, contact)
@@ -327,9 +349,11 @@ def run_pipeline(
             return EXIT_BAD_INPUT
         logger.info(_eta_line(papers, args.delay))
 
-        fetcher = fetcher or crawler.PoliteFetcher(
-            crawler.USER_AGENT.format(contact=contact), args.delay
-        )
+        fetcher = fetcher or settings.make_fetcher(contact, args.delay)
+        if discovery_seconds is not None:
+            # discovery.py (tiến trình con) vừa gọi arXiv API/OAI: request tải đầu tiên cũng
+            # phải cách request cuối của nó >= delay.
+            fetcher.note_external_request()
         s2_client = s2_client or s2_api.S2Client(s2_api.S2Settings.from_config(args.config))
         arxiv_ids = [row["arxiv_id"] for row in papers]
 
@@ -345,6 +369,10 @@ def run_pipeline(
                 max_consecutive_errors=args.max_consecutive_errors,
                 resume=not args.fresh_crawl,
                 max_disk_gb=args.max_disk_gb,
+                spool_dir=paths.spool,
+                extract_workers=settings.extract_workers,
+                max_spool_gb=settings.max_spool_gb,
+                stop_event=stop_event,
             )  # fmt: skip
 
         def crawl_s2() -> list[s2_api.CrawlResult]:
@@ -364,7 +392,12 @@ def run_pipeline(
                     thread.join(timeout=1.0)  # timeout để Ctrl+C vẫn ngắt được
         except KeyboardInterrupt:
             interrupted = True
-            print("\nDa dung theo yeu cau. Chay lai CUNG LENH de tiep tuc.")
+            print("\nDang dung: cho request dang chay xong va trich xuat not cac goi da tai...")
+            stop_event.set()  # luồng arXiv ngừng tải version mới, xử lý nốt hàng đợi rồi thoát
+            for thread in threads:
+                if thread.name == "arxiv":
+                    thread.join(timeout=STOP_JOIN_S)
+            print("Da dung theo yeu cau. Chay lai CUNG LENH de tiep tuc.")
 
     wall = time.monotonic() - wall_start
     crawl_summary = stages["arxiv"].value
@@ -518,6 +551,8 @@ def build_parser() -> argparse.ArgumentParser:
     add("--max_disk_gb", type=float, default=None, help="Dung khi thu muc output vuot nguong (GB)")
     add("--max_consecutive_errors", type=int, default=10)
     add("--s2_batch", type=int, default=100, help="So bai moi lo POST /paper/batch cua S2")
+    add("--sources_root", type=Path, default=None,
+        help="Thu muc goc cua spool (mac dinh <data_root>/../sources => data/sources/<name>)")
     add("--skip_discovery", action="store_true", help="Dung file discovery co san")
     add("--skip_crawl", action="store_true", help="Khong tai arXiv")
     add("--skip_s2", action="store_true", help="Khong goi Semantic Scholar")

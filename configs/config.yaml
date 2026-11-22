@@ -3,6 +3,12 @@ crawler:
   delay_seconds: 3
   max_retries: 3
   timeout: 60
+  # Timeout ĐỌC (giây): kết nối treo quá mức này thì cắt và tải tiếp bằng Range.
+  timeout_read: 30
+  # Số luồng trích xuất chạy nền (việc TẢI vẫn tuần tự, một kết nối tới arXiv).
+  extract_workers: 1
+  # Luồng tải chờ khi gói đã tải mà chưa trích xuất (data/sources/<name>/) vượt mức này (GB).
+  max_spool_gb: 2
 s2_api:
   base_url: "https://api.semanticscholar.org/graph/v1"
   delay_seconds: 1

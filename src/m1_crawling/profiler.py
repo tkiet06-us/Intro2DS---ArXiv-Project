@@ -77,7 +77,11 @@ class Profiler:
     """
 
     def __init__(
-        self, watch_dir: Path | None = None, interval: float = 0.5, disk_every: int = 10
+        self,
+        watch_dir: Path | None = None,
+        interval: float = 0.5,
+        disk_every: int = 10,
+        extra_dirs: tuple[Path, ...] | list[Path] = (),
     ) -> None:
         """Khởi tạo profiler.
 
@@ -85,8 +89,13 @@ class Profiler:
             watch_dir: Thư mục output cần theo dõi dung lượng; None thì không đo đĩa.
             interval: Số giây giữa hai lần lấy mẫu RAM.
             disk_every: Cứ bao nhiêu lần lấy mẫu RAM thì đo đĩa một lần.
+            extra_dirs: Thư mục làm việc tạm (ví dụ spool chứa gói đã tải chờ trích xuất). Dung
+                lượng của chúng được CỘNG vào ``max_disk_mb`` (đĩa đỉnh cần có khi chạy) nhưng
+                KHÔNG tính vào ``final_disk_mb`` (kích thước output cuối).
         """
         self._watch_dir = watch_dir
+        self._extra_dirs = tuple(extra_dirs)
+        self._disk_final = 0
         self._interval = interval
         self._disk_every = max(disk_every, 1)
         self._lock = threading.Lock()
@@ -164,8 +173,10 @@ class Profiler:
     def _sample_disk(self) -> None:
         # Duyệt thư mục ngoài lock để không chặn các luồng khác.
         size = dir_size(self._watch_dir) if self._watch_dir is not None else 0
+        extra = sum(dir_size(path) for path in self._extra_dirs)
         with self._lock:
-            self._disk.append(size)
+            self._disk.append(size + extra)  # đĩa đang chiếm: output + thư mục tạm
+            self._disk_final = size  # chỉ output
 
     def record_paper(
         self, arxiv_id: str, seconds: float, n_refs: int = 0, n_refs_co_arxiv_id: int = 0
@@ -218,7 +229,7 @@ class Profiler:
                 n_ram_samples=n_samples,
                 n_sample_errors=self._n_errors,
                 max_disk_mb=max(self._disk) / MB if self._disk else None,
-                final_disk_mb=self._disk[-1] / MB if self._disk else None,
+                final_disk_mb=self._disk_final / MB if self._disk else None,
                 n_refs_total=int(sum(p[1] for p in self._papers.values())),
                 n_refs_co_arxiv_id_total=int(sum(p[2] for p in self._papers.values())),
             )

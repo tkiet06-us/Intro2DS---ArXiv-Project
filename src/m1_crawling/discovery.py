@@ -109,6 +109,41 @@ def load_ranges(a):
             sys.exit(f"Hai dai chong len nhau: [{s1}, {e1}] va [{s2}, {e2}].")
     return ranges
 
+def month_prefixes(ranges):
+    """Tien to 'YYMM.' (bytes) cua MOI thang nam trong cac dai, vd [(2506.09000, 2508.00010)]
+    -> [b'2506.', b'2507.', b'2508.']. Dung de loc nhanh dong Kaggle truoc khi json.loads."""
+    out = set()
+    for s, e in ranges:
+        (p1, _), (p2, _) = parse_id(s), parse_id(e)
+        yy, mm = int(p1[:2]), int(p1[2:])
+        while True:
+            out.add(f"{yy:02d}{mm:02d}.".encode("ascii"))
+            if f"{yy:02d}{mm:02d}" >= p2 or len(out) > 1200:
+                break
+            mm += 1
+            if mm > 12:
+                yy, mm = (yy + 1) % 100, 1
+    return sorted(out)
+
+def iter_kaggle_rows(path, ranges):
+    """Doc snapshot Kaggle TUNG DONG (khong nap ca file / ca chunk vao RAM nhu pandas).
+    Loc nhanh bang chuoi: chi dong co chua tien to 'YYMM.' cua dai moi duoc json.loads, roi kiem
+    lai chinh xac theo ID (ID cung do rong YYMM.NNNNN => so sanh chuoi dung). Sinh (id, versions)."""
+    prefixes = month_prefixes(ranges)
+    with open(path, "rb") as f:
+        for raw in f:
+            if not any(p in raw for p in prefixes):
+                continue
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                continue                  # dong hong/cut ngang: bo qua
+            if not isinstance(row, dict) or "id" not in row:
+                continue
+            aid = str(row["id"])
+            if any(s <= aid <= e for s, e in ranges):
+                yield aid, row.get("versions")
+
 def in_ranges(ids_s, ranges):
     """Mask pandas: ID nam trong BAT KY dai nao (ID cung do rong YYMM.NNNNN => so sanh chuoi dung)."""
     mask = None
@@ -181,20 +216,14 @@ def worker_oai(a, ids):
             "errors": errors, "req_seconds": req_s, "versions": out, "baseline_mb": base}
 
 def worker_kaggle(a, ids):
-    import pandas as pd
     base = rss_mb()
     wanted = set(ids)
     found, sample = 0, {}
     t0 = time.perf_counter()
-    with pd.read_json(a.kaggle_json, lines=True, chunksize=a.chunksize, dtype=False) as reader:
-        for ch in reader:
-            ch_str = ch["id"].astype(str)
-            mask = (ch_str >= a.id_start) & (ch_str <= a.id_end)
-            ch_filtered = ch[mask]
-            found += len(ch_filtered)
-            for _, row in ch_filtered.iterrows():
-                if row["id"] in wanted:
-                    sample[row["id"]] = len(row["versions"])
+    for aid, vs in iter_kaggle_rows(a.kaggle_json, [(a.id_start, a.id_end)]):
+        found += 1
+        if aid in wanted:
+            sample[aid] = len(vs)
     return {"seconds": time.perf_counter() - t0, "found_full_range": found,
             "found_in_sample": len(sample), "versions": sample,
             "file_gb": round(os.path.getsize(a.kaggle_json) / 1e9, 2), "baseline_mb": base}
@@ -361,7 +390,6 @@ def write_jsonl(path, rows):
     os.replace(tmp, path)
 
 def run_full(a):
-    import pandas as pd
     ranges = a.ranges
     print(f"--- CHAY DISCOVERY TOAN DAI ({len(ranges)} dai) ---")
     for s_, e_ in ranges:
@@ -371,20 +399,17 @@ def run_full(a):
     warnings = []
     if _psutil() is None:
         warnings.append("Chua cai psutil: khong do duoc RAM (pip install psutil). Tren Windows RAM dinh can psutil.")
-    ram = {"baseline_mb": rss_mb()}                  # RAM nen sau khi import pandas
+    ram = {"baseline_mb": rss_mb()}                  # RAM nen (khong con import pandas)
     t_all = time.perf_counter()
 
     # ---- 1) quet Kaggle MOT LAN: ngay tung version
     print("1. Quet Kaggle de lay ngay tung version...", flush=True)
     t = time.perf_counter()
     kaggle = {}                                      # id -> {"v1": iso, "v2": iso, ...}
-    with pd.read_json(a.kaggle_json, lines=True, chunksize=a.chunksize, dtype=False,
-                      convert_dates=False) as reader:
-        for ch in reader:
-            ids_s = ch["id"].astype(str)
-            sub = ch[in_ranges(ids_s, ranges)]       # loc theo TAT CA cac dai trong 1 lan quet
-            for aid, vs in zip(sub["id"].astype(str), sub["versions"]):
-                kaggle[aid] = {v["version"]: iso_utc(v["created"]) for v in vs} if isinstance(vs, list) else {}
+    # Doc tung dong + loc bang chuoi truoc khi json.loads: RAM khong phu thuoc kich thuoc snapshot
+    # (truoc day pandas doc tung chunk 200.000 dong => dinh ~3,3 GB). Loc TAT CA cac dai trong 1 lan quet.
+    for aid, vs in iter_kaggle_rows(a.kaggle_json, ranges):
+        kaggle[aid] = {v["version"]: iso_utc(v["created"]) for v in vs} if isinstance(vs, list) else {}
     t_kaggle = time.perf_counter() - t
     ram["peak_after_kaggle_scan_mb"] = peak_ram_mb()
     kgb = os.path.getsize(a.kaggle_json) / 1e6
@@ -860,7 +885,8 @@ if __name__ == "__main__":
     add("--kaggle-snapshot-date", default=None)
     add("--hash-kaggle", action="store_true")
     add("--download-seconds", type=float, default=None)
-    add("--chunksize", type=int, default=200_000)
+    add("--chunksize", type=int, default=200_000,
+        help="(KHONG con dung: Kaggle nay doc tung dong; giu co de lenh cu khong vo)")
     add("--ram-limit-mb", type=float, default=6000)
     add("--out", default="data/raw/discovery_25k.jsonl",
         help="(mode full/patch) file jsonl ban giao cho P2-01 (crawler.py doc mac dinh file nay)")
